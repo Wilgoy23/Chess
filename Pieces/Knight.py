@@ -1,6 +1,6 @@
-from PieceInterface import PieceInterface
+from Pieces.PieceInterface import PieceInterface
 
-def Knight(PieceInterface):
+class Knight(PieceInterface):
     def __init__(self, color):
         self.color = color
 

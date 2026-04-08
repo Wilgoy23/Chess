@@ -1,6 +1,6 @@
-from PieceInterface import PieceInterface
+from Pieces.PieceInterface import PieceInterface
 
-def Bishop(PieceInterface):
+class Bishop(PieceInterface):
     def __init__(self, color):
         self.color = color
 

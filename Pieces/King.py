@@ -1,6 +1,6 @@
-from PieceInterface import PieceInterface
+from Pieces.PieceInterface import PieceInterface
 
-def King(PieceInterface):
+class King(PieceInterface):
     def __init__(self, color):
         self.color = color
 

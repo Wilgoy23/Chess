@@ -1,6 +1,6 @@
-from PieceInterface import PieceInterface
+from Pieces.PieceInterface import PieceInterface
 
-def Rook(PieceInterface):
+class Rook(PieceInterface):
     def __init__(self, color):
         self.color = color
 

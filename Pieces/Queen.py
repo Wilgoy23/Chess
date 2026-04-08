@@ -9,8 +9,23 @@ class Queen(PieceInterface):
         pass
 
     def get_possible_moves(self, board, position):
-        # Implement the logic to get possible moves for the queen
-        pass
+        moves = []
+        row, col = position
+        # Queen combines rook (straight) and bishop (diagonal) directions
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]:
+            nr, nc = row + dr, col + dc
+            while 0 <= nr < 8 and 0 <= nc < 8:
+                target = board[nr][nc]
+                if target is None:
+                    moves.append((nr, nc))
+                elif target.get_color() != self.color:
+                    moves.append((nr, nc))  # capture, then stop
+                    break
+                else:
+                    break  # blocked by own piece
+                nr += dr
+                nc += dc
+        return moves
 
     def get_color(self):
         return self.color

@@ -9,8 +9,16 @@ class Knight(PieceInterface):
         pass
 
     def get_possible_moves(self, board, position):
-        # Implement the logic to get possible moves for the knight
-        pass
+        moves = []
+        row, col = position
+        # All 8 L-shaped jumps
+        for dr, dc in [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]:
+            nr, nc = row + dr, col + dc
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                target = board[nr][nc]
+                if target is None or target.get_color() != self.color:
+                    moves.append((nr, nc))
+        return moves
 
     def get_color(self):
         return self.color

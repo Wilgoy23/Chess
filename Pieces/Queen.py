@@ -4,10 +4,6 @@ class Queen(PieceInterface):
     def __init__(self, color):
         self.color = color
 
-    def move(self, board, start_pos, end_pos):
-        # Implement the logic to move the queen on the board
-        pass
-
     def get_possible_moves(self, board, position):
         moves = []
         row, col = position

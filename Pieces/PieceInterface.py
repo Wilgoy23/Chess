@@ -2,9 +2,6 @@ from abc import ABC, abstractmethod
 
 
 class PieceInterface(ABC):
-    @abstractmethod
-    def move(self, board, start_pos, end_pos):
-        pass
 
     @abstractmethod
     def get_possible_moves(self, board, position):

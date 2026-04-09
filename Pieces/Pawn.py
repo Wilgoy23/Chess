@@ -1,5 +1,6 @@
 
 from Pieces.PieceInterface import PieceInterface
+from Pieces.Queen import Queen
 
 class Pawn(PieceInterface):
     def __init__(self, color):
@@ -36,6 +37,11 @@ class Pawn(PieceInterface):
     def get_type(self):
         return "Pawn"
 
-    def is_valid_move(self, board, start_pos, end_pos):
-        # Implement the logic to check if the move is valid for a pawn
+    def move(self, _grid: list, from_pos: tuple, to_pos: tuple) -> list:
+        promo_row = 0 if self.color == "white" else 7
+        if to_pos[0] == promo_row:
+            return [(from_pos, to_pos, Queen(self.color))]
+        return [(from_pos, to_pos, self)]
+
+    def is_valid_move(self, _board, _start_pos, _end_pos):
         pass

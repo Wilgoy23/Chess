@@ -148,48 +148,34 @@ class Board:
 
     def _move(self, from_pos, to_pos):
         fr, fc = from_pos
-        tr, tc = to_pos
-        piece = self.grid[fr][fc]
-        captured = self.grid[tr][tc]
+        piece    = self.grid[fr][fc]
+        captured = self.grid[to_pos[0]][to_pos[1]]
 
         # Revoke castling rights if a corner rook is captured
         if captured is not None and captured.get_type() == "Rook":
-            if (tr, tc) == (7, 0): self.castling_rights["white"]["queenside"] = False
-            elif (tr, tc) == (7, 7): self.castling_rights["white"]["kingside"] = False
-            elif (tr, tc) == (0, 0): self.castling_rights["black"]["queenside"] = False
-            elif (tr, tc) == (0, 7): self.castling_rights["black"]["kingside"] = False
+            if   to_pos == (7, 0): self.castling_rights["white"]["queenside"] = False
+            elif to_pos == (7, 7): self.castling_rights["white"]["kingside"]  = False
+            elif to_pos == (0, 0): self.castling_rights["black"]["queenside"] = False
+            elif to_pos == (0, 7): self.castling_rights["black"]["kingside"]  = False
 
-        self.grid[tr][tc] = piece
-        self.grid[fr][fc] = None
+        # Delegate grid mutations to the piece
+        for origin, destination, piece_obj in piece.move(self.grid, from_pos, to_pos):
+            self.grid[destination[0]][destination[1]] = piece_obj
+            self.grid[origin[0]][origin[1]] = None
 
-        # Pawn promotion: auto-promote to Queen
-        if piece.get_type() == "Pawn":
-            promo_row = 0 if piece.get_color() == "white" else 7
-            if tr == promo_row:
-                self.grid[tr][tc] = Queen(piece.get_color())
-
-        # King move: revoke all castling rights; detect and execute castling
-        if piece.get_type() == "King":
-            color = piece.get_color()
-            self.castling_rights[color]["kingside"] = False
+        # Board-owned castling rights revocation
+        ptype, color = piece.get_type(), piece.get_color()
+        if ptype == "King":
+            self.castling_rights[color]["kingside"]  = False
             self.castling_rights[color]["queenside"] = False
-            if abs(tc - fc) == 2:  # castling move detected
-                if tc == 6:  # kingside — rook goes from h to f
-                    self.grid[fr][5] = self.grid[fr][7]
-                    self.grid[fr][7] = None
-                else:         # queenside (tc == 2) — rook goes from a to d
-                    self.grid[fr][3] = self.grid[fr][0]
-                    self.grid[fr][0] = None
-
-        # Rook move: revoke the relevant castling right
-        if piece.get_type() == "Rook":
-            if (fr, fc) == (7, 0): self.castling_rights["white"]["queenside"] = False
-            elif (fr, fc) == (7, 7): self.castling_rights["white"]["kingside"] = False
+        if ptype == "Rook":
+            if   (fr, fc) == (7, 0): self.castling_rights["white"]["queenside"] = False
+            elif (fr, fc) == (7, 7): self.castling_rights["white"]["kingside"]  = False
             elif (fr, fc) == (0, 0): self.castling_rights["black"]["queenside"] = False
-            elif (fr, fc) == (0, 7): self.castling_rights["black"]["kingside"] = False
+            elif (fr, fc) == (0, 7): self.castling_rights["black"]["kingside"]  = False
 
-        self.turn = "black" if self.turn == "white" else "white"
-        self.selected = None
+        self.turn        = "black" if self.turn == "white" else "white"
+        self.selected    = None
         self.valid_moves = []
 
     # -------------------------------------------------------------------------

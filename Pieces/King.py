@@ -25,6 +25,22 @@ class King(PieceInterface):
     def get_type(self):
         return "King"
 
+    def move(self, grid: list, from_pos: tuple, to_pos: tuple) -> list:
+        fr, fc = from_pos
+        tc = to_pos[1]
+        mutations = [(from_pos, to_pos, self)]
+
+        if abs(tc - fc) == 2:               # castling detected
+            if tc == 6:                     # kingside: rook h→f
+                rook_origin, rook_dest = (fr, 7), (fr, 5)
+            else:                           # queenside: rook a→d
+                rook_origin, rook_dest = (fr, 0), (fr, 3)
+
+            rook = grid[rook_origin[0]][rook_origin[1]]
+            if rook is not None:
+                mutations.append((rook_origin, rook_dest, rook))
+
+        return mutations
+
     def is_valid_move(self, board, start_pos, end_pos):
-        # Implement the logic to check if the move is valid for a king
         pass

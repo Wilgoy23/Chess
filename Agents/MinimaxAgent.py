@@ -124,7 +124,7 @@ REPETITION_PENALTY       = 0.30  # subtracted per time a position was already pl
 
 class MinimaxAgent(AgentInterface):
 
-    def __init__(self, color, depth=3, time_limit=5.0):
+    def __init__(self, color, depth=5, time_limit=10.0):
         self.color = color
         self.depth = depth
         self.time_limit = time_limit  # seconds

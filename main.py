@@ -2,8 +2,9 @@ import threading
 
 import pygame
 from Agents.RandomAgent import RandomAgent
-from board import Board
 from Agents.MinimaxAgent import MinimaxAgent
+from Agents.MonteCarloAgent import MonteCarloAgent
+from board import Board
 
 # -----------------------------------------------------------------------------
 # Game mode — set your players here:
@@ -16,8 +17,8 @@ from Agents.MinimaxAgent import MinimaxAgent
 #   AI vs Human:     WHITE_PLAYER = MinimaxAgent("white"), BLACK_PLAYER = None
 #   AI vs AI:        WHITE_PLAYER = MinimaxAgent("white"), BLACK_PLAYER = MinimaxAgent("black")
 # -----------------------------------------------------------------------------
-WHITE_PLAYER = RandomAgent("white")
-BLACK_PLAYER = MinimaxAgent("black", depth=3, time_limit=5.0)
+WHITE_PLAYER = MonteCarloAgent("white")
+BLACK_PLAYER = MinimaxAgent("black")
 
 SQUARE_SIZE = 100
 WINDOW_SIZE = SQUARE_SIZE * 8  # 800x800

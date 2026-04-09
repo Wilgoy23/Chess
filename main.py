@@ -1,8 +1,9 @@
 import threading
 
 import pygame
+from Agents.RandomAgent import RandomAgent
 from board import Board
-from Agents.minimax import MinimaxAgent
+from Agents.MinimaxAgent import MinimaxAgent
 
 # -----------------------------------------------------------------------------
 # Game mode — set your players here:
@@ -15,7 +16,7 @@ from Agents.minimax import MinimaxAgent
 #   AI vs Human:     WHITE_PLAYER = MinimaxAgent("white"), BLACK_PLAYER = None
 #   AI vs AI:        WHITE_PLAYER = MinimaxAgent("white"), BLACK_PLAYER = MinimaxAgent("black")
 # -----------------------------------------------------------------------------
-WHITE_PLAYER = None
+WHITE_PLAYER = RandomAgent("white")
 BLACK_PLAYER = MinimaxAgent("black", depth=3, time_limit=5.0)
 
 SQUARE_SIZE = 100
@@ -60,7 +61,7 @@ while running:
 
     # Agent turn: non-blocking search via background thread
     agent = current_agent()
-    if agent is not None:
+    if agent is not None and not board.game_over:
         if _pending_move is not None:           # search finished — apply move
             from_pos, to_pos = _pending_move
             _pending_move = None

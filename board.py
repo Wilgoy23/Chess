@@ -14,6 +14,11 @@ class Board:
     DARK = (181, 136, 99)
     HIGHLIGHT_COLOR = (186, 202, 68)
     VALID_MOVE_COLOR = (100, 111, 64)
+    LAST_MOVE_COLOR = (205, 210, 106)
+    CHECK_COLOR = (220, 20, 20)
+
+    _COL_NAMES = "abcdefgh"
+    _ROW_NAMES = "87654321"  # row 0 = rank 8
 
     UNICODE = {
         "white": {
@@ -36,6 +41,10 @@ class Board:
             "white": {"kingside": True, "queenside": True},
             "black": {"kingside": True, "queenside": True},
         }
+        self.last_move = None   # (from_pos, to_pos) of the most recent move
+        self.in_check = False   # True when the side to move is in check
+        self.game_over = False
+        self.winner = None      # "white", "black", or None (stalemate)
         self.images = {}
         self._font = None
         self._load_pieces()
@@ -98,10 +107,78 @@ class Board:
         return 0 <= row < 8 and 0 <= col < 8
 
     # -------------------------------------------------------------------------
+    # Check / legality helpers
+    # -------------------------------------------------------------------------
+
+    def _is_square_attacked(self, grid, row, col, by_color):
+        """Return True if (row, col) is reachable by any piece of by_color."""
+        for r in range(8):
+            for c in range(8):
+                p = grid[r][c]
+                if p and p.get_color() == by_color:
+                    if (row, col) in (p.get_possible_moves(grid, (r, c)) or []):
+                        return True
+        return False
+
+    def _is_in_check(self, grid, color):
+        """Return True if color's king is currently attacked."""
+        opponent = "black" if color == "white" else "white"
+        for r in range(8):
+            for c in range(8):
+                p = grid[r][c]
+                if p and p.get_type() == "King" and p.get_color() == color:
+                    return self._is_square_attacked(grid, r, c, opponent)
+        return False  # king not found (shouldn't happen)
+
+    def _get_legal_moves(self, from_pos):
+        """Return moves for the piece at from_pos that don't leave own king in check."""
+        fr, fc = from_pos
+        piece = self.grid[fr][fc]
+        if piece is None:
+            return []
+        color = piece.get_color()
+        raw = list(piece.get_possible_moves(self.grid, from_pos) or [])
+        if piece.get_type() == "King":
+            raw += self._get_castling_moves(color)
+
+        legal = []
+        for to_pos in raw:
+            tr, tc = to_pos
+            test = [row[:] for row in self.grid]
+            test[tr][tc] = test[fr][fc]
+            test[fr][fc] = None
+            # Simulate castling rook relocation in the test grid
+            if piece.get_type() == "King" and abs(tc - fc) == 2:
+                if tc == 6:
+                    test[fr][5] = test[fr][7]
+                    test[fr][7] = None
+                else:
+                    test[fr][3] = test[fr][0]
+                    test[fr][0] = None
+            if not self._is_in_check(test, color):
+                legal.append(to_pos)
+        return legal
+
+    def _has_any_legal_move(self, color):
+        """Return True if color has at least one legal move."""
+        for r in range(8):
+            for c in range(8):
+                p = self.grid[r][c]
+                if p and p.get_color() == color:
+                    if self._get_legal_moves((r, c)):
+                        return True
+        return False
+
+    def _square_name(self, row, col):
+        return f"{self._COL_NAMES[col]}{self._ROW_NAMES[row]}"
+
+    # -------------------------------------------------------------------------
     # Input handling
     # -------------------------------------------------------------------------
 
     def handle_click(self, pixel_x, pixel_y):
+        if self.game_over:
+            return
         col = pixel_x // self.square_size
         row = pixel_y // self.square_size
         if self._in_bounds(row, col):
@@ -121,11 +198,7 @@ class Board:
 
         if piece and piece.get_color() == self.turn:
             self.selected = (row, col)
-            self.valid_moves = piece.get_possible_moves(self.grid, (row, col))
-            if self.valid_moves is None:
-                self.valid_moves = []
-            if piece.get_type() == "King":
-                self.valid_moves += self._get_castling_moves(piece.get_color())
+            self.valid_moves = self._get_legal_moves((row, col))
         else:
             self.selected = None
             self.valid_moves = []
@@ -134,16 +207,32 @@ class Board:
         moves = []
         row = 7 if color == "white" else 0
         rights = self.castling_rights[color]
-        # King must still be on its starting square
+        opponent = "black" if color == "white" else "white"
+
         king = self.grid[row][4]
         if king is None or king.get_type() != "King":
             return moves
-        # Kingside: squares f and g must be empty
-        if rights["kingside"] and self.grid[row][5] is None and self.grid[row][6] is None:
+        # Can't castle while in check
+        if self._is_in_check(self.grid, color):
+            return moves
+
+        # Kingside: e→f→g must be clear and f,g not attacked
+        if (rights["kingside"]
+                and self.grid[row][5] is None
+                and self.grid[row][6] is None
+                and not self._is_square_attacked(self.grid, row, 5, opponent)
+                and not self._is_square_attacked(self.grid, row, 6, opponent)):
             moves.append((row, 6))
-        # Queenside: squares b, c, d must be empty
-        if rights["queenside"] and self.grid[row][1] is None and self.grid[row][2] is None and self.grid[row][3] is None:
+
+        # Queenside: b,c,d must be empty; d,c not attacked (king passes through d,c)
+        if (rights["queenside"]
+                and self.grid[row][1] is None
+                and self.grid[row][2] is None
+                and self.grid[row][3] is None
+                and not self._is_square_attacked(self.grid, row, 3, opponent)
+                and not self._is_square_attacked(self.grid, row, 2, opponent)):
             moves.append((row, 2))
+
         return moves
 
     def _move(self, from_pos, to_pos):
@@ -174,9 +263,32 @@ class Board:
             elif (fr, fc) == (0, 0): self.castling_rights["black"]["queenside"] = False
             elif (fr, fc) == (0, 7): self.castling_rights["black"]["kingside"]  = False
 
+        # Console move log
+        mover = piece.get_color()
+        print(f"[{mover.capitalize():5}] {piece.get_type()} "
+              f"{self._square_name(fr, fc)} → {self._square_name(*to_pos)}")
+
+        self.last_move   = (from_pos, to_pos)
         self.turn        = "black" if self.turn == "white" else "white"
         self.selected    = None
         self.valid_moves = []
+
+        # Check / checkmate / stalemate detection
+        self.in_check = self._is_in_check(self.grid, self.turn)
+        if not self._has_any_legal_move(self.turn):
+            self.game_over = True
+            if self.in_check:
+                self.winner = mover   # the side that just moved wins
+                print(f"Checkmate! {mover.capitalize()} wins.")
+            else:
+                self.winner = None
+                print("Stalemate! Draw.")
+        elif self.in_check:
+            print(f"  → {self.turn.capitalize()} is in check!")
+
+        status = "Game over" if self.game_over else self.turn.capitalize() + "'s turn"
+        check_tag = " [CHECK]" if self.in_check and not self.game_over else ""
+        pygame.display.set_caption(f"Chess — {status}{check_tag}")
 
     # -------------------------------------------------------------------------
     # Rendering
@@ -184,6 +296,8 @@ class Board:
 
     def draw(self, surface):
         self._draw_squares(surface)
+        self._draw_last_move(surface)
+        self._draw_check(surface)
         self._draw_highlights(surface)
         self._draw_valid_moves(surface)
         self._draw_pieces(surface)
@@ -199,6 +313,25 @@ class Board:
                     self.square_size,
                 )
                 pygame.draw.rect(surface, color, rect)
+
+    def _draw_last_move(self, surface):
+        if not self.last_move:
+            return
+        overlay = pygame.Surface((self.square_size, self.square_size), pygame.SRCALPHA)
+        overlay.fill((*self.LAST_MOVE_COLOR, 160))
+        for row, col in self.last_move:
+            surface.blit(overlay, (col * self.square_size, row * self.square_size))
+
+    def _draw_check(self, surface):
+        if not self.in_check:
+            return
+        for r in range(8):
+            for c in range(8):
+                p = self.grid[r][c]
+                if p and p.get_type() == "King" and p.get_color() == self.turn:
+                    overlay = pygame.Surface((self.square_size, self.square_size), pygame.SRCALPHA)
+                    overlay.fill((*self.CHECK_COLOR, 160))
+                    surface.blit(overlay, (c * self.square_size, r * self.square_size))
 
     def _draw_highlights(self, surface):
         if not self.selected:

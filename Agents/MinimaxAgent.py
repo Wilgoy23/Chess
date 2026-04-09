@@ -1,6 +1,7 @@
 import copy
 import time
 from Agents.AgentInterface import AgentInterface
+from Agents.chess_utils import get_legal_moves
 
 
 # Material value of each piece type
@@ -115,6 +116,11 @@ WEIGHT_KING_SAFETY = 0.15
 WEIGHT_PAWN_STRUCT = 0.20
 BISHOP_PAIR_BONUS  = 0.50
 
+# Endgame mating bonuses (only applied when clearly winning in the endgame)
+WEIGHT_ENDGAME_CORNER    = 1.00  # reward opponent king being far from center
+WEIGHT_ENDGAME_PROXIMITY = 0.50  # reward our king being close to opponent king
+REPETITION_PENALTY       = 0.30  # subtracted per time a position was already played
+
 
 class MinimaxAgent(AgentInterface):
 
@@ -124,9 +130,12 @@ class MinimaxAgent(AgentInterface):
         self.time_limit = time_limit  # seconds
         self._opponent = "black" if color == "white" else "white"
         self._deadline = None
+        self._position_history = {}  # pos_hash -> times seen this game
 
     def get_move(self, grid, _color):
         self._deadline = time.time() + self.time_limit
+        h = self._hash_grid(grid)
+        self._position_history[h] = self._position_history.get(h, 0) + 1
         _, move = self._minimax(grid, self.depth, float("-inf"), float("inf"), True)
         return move
 
@@ -282,6 +291,26 @@ class MinimaxAgent(AgentInterface):
         if bishop_count[self._opponent] == 2:
             bishop_pair -= BISHOP_PAIR_BONUS
 
+        # --- Endgame mating bonus: push opponent king to edge, bring ours close ---
+        endgame_bonus = 0.0
+        if phase_ratio < 0.5 and material > 0.5 and len(king_pos) == 2:
+            my_k  = king_pos.get(self.color)
+            opp_k = king_pos.get(self._opponent)
+            if my_k and opp_k:
+                opp_center_dist = abs(opp_k[0] - 3.5) + abs(opp_k[1] - 3.5)  # 1.0..7.0
+                king_chebyshev  = max(abs(my_k[0] - opp_k[0]), abs(my_k[1] - opp_k[1]))
+                endgame_bonus = (1.0 - phase_ratio) * (
+                    WEIGHT_ENDGAME_CORNER    * opp_center_dist / 7.0
+                    + WEIGHT_ENDGAME_PROXIMITY * (7 - king_chebyshev) / 7.0
+                )
+
+        # --- Repetition penalty: discourage returning to already-played positions ---
+        repetition_penalty = 0.0
+        h = self._hash_grid(grid)
+        count = self._position_history.get(h, 0)
+        if count > 0:
+            repetition_penalty = REPETITION_PENALTY * count
+
         return (
             material       * WEIGHT_MATERIAL
             + pst_score    * WEIGHT_PST
@@ -289,21 +318,24 @@ class MinimaxAgent(AgentInterface):
             + king_safety  * WEIGHT_KING_SAFETY   * phase_ratio
             + pawn_struct  * WEIGHT_PAWN_STRUCT
             + bishop_pair
+            + endgame_bonus
+            - repetition_penalty
         )
 
     # -------------------------------------------------------------------------
     # Helpers
     # -------------------------------------------------------------------------
 
+    @staticmethod
+    def _hash_grid(grid):
+        return tuple(
+            (piece.get_color()[0] + piece.get_type()[0]) if piece else '.'
+            for row in grid
+            for piece in row
+        )
+
     def _get_all_moves(self, grid, color):
-        moves = []
-        for row in range(8):
-            for col in range(8):
-                piece = grid[row][col]
-                if piece and piece.get_color() == color:
-                    for to_pos in piece.get_possible_moves(grid, (row, col)) or []:
-                        moves.append(((row, col), to_pos))
-        return moves
+        return get_legal_moves(grid, color)
 
     def _apply_move(self, grid, from_pos, to_pos):
         new_grid = copy.deepcopy(grid)

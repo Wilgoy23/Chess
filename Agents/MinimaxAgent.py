@@ -1,7 +1,8 @@
 import copy
 import time
 from Agents.AgentInterface import AgentInterface
-from Agents.chess_utils import get_legal_moves
+from Agents.chess_utils import get_legal_moves, is_in_check
+from Pieces.Queen import Queen
 
 
 # Material value of each piece type
@@ -152,7 +153,12 @@ class MinimaxAgent(AgentInterface):
 
         all_moves = self._get_all_moves(grid, self.color if maximizing else self._opponent)
         if not all_moves:
-            return self._evaluate(grid), None
+            current_color = self.color if maximizing else self._opponent
+            if is_in_check(grid, current_color):
+                # Checkmate: use large finite values so faster mates are preferred
+                return (-100_000 + depth if maximizing else 100_000 - depth), None
+            else:
+                return 0.0, None  # Stalemate
 
         best_move = None
 
@@ -341,6 +347,24 @@ class MinimaxAgent(AgentInterface):
         new_grid = copy.deepcopy(grid)
         fr, fc = from_pos
         tr, tc = to_pos
-        new_grid[tr][tc] = new_grid[fr][fc]
+        piece = new_grid[fr][fc]
+        new_grid[tr][tc] = piece
         new_grid[fr][fc] = None
+
+        if piece is not None:
+            # Castling: also relocate the rook
+            if piece.get_type() == "King" and abs(tc - fc) == 2:
+                if tc == 6:  # kingside
+                    new_grid[tr][5] = new_grid[tr][7]
+                    new_grid[tr][7] = None
+                else:        # queenside
+                    new_grid[tr][3] = new_grid[tr][0]
+                    new_grid[tr][0] = None
+
+            # Pawn promotion: always promote to queen
+            if piece.get_type() == "Pawn":
+                promo_row = 0 if piece.get_color() == "white" else 7
+                if tr == promo_row:
+                    new_grid[tr][tc] = Queen(piece.get_color())
+
         return new_grid

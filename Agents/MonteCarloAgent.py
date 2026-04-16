@@ -82,7 +82,7 @@ class MCTSNode:
 
 class MonteCarloAgent(AgentInterface):
 
-    def __init__(self, color, time_limit=10.0, max_simulations=1000,
+    def __init__(self, color, time_limit=2.0, max_simulations=1000,
                  max_rollout_depth=50, exploration_constant=1.414):
         self.color = color
         self.time_limit = time_limit

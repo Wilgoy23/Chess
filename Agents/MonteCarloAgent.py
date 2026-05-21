@@ -1,10 +1,10 @@
-import copy
 import math
 import random
 import time
 
 from Agents.AgentInterface import AgentInterface
-from Agents.chess_utils import get_legal_moves, is_in_check
+from Agents.chess_utils import get_legal_moves
+from Pieces.Queen import Queen
 
 PIECE_VALUES = {"Pawn": 1, "Knight": 3, "Bishop": 3, "Rook": 5, "Queen": 9, "King": 0}
 
@@ -14,11 +14,29 @@ def _opponent(color):
 
 
 def _apply_move(grid, from_pos, to_pos):
-    new_grid = copy.deepcopy(grid)
+    """Shallow-copy the grid and apply one move, including castling and promotion."""
+    new_grid = [row[:] for row in grid]   # safe: piece objects are immutable
     fr, fc = from_pos
     tr, tc = to_pos
-    new_grid[tr][tc] = new_grid[fr][fc]
+    piece = new_grid[fr][fc]
+    new_grid[tr][tc] = piece
     new_grid[fr][fc] = None
+
+    if piece is not None:
+        # Castling: relocate the rook that pairs with the king's 2-square jump
+        if piece.get_type() == "King" and abs(tc - fc) == 2:
+            if tc == 6:                       # kingside
+                new_grid[tr][5] = new_grid[tr][7]
+                new_grid[tr][7] = None
+            else:                             # queenside
+                new_grid[tr][3] = new_grid[tr][0]
+                new_grid[tr][0] = None
+        # Pawn promotion → always queen (standard MCTS simplification)
+        if piece.get_type() == "Pawn":
+            promo_row = 0 if piece.get_color() == "white" else 7
+            if tr == promo_row:
+                new_grid[tr][tc] = Queen(piece.get_color())
+
     return new_grid
 
 
@@ -47,19 +65,42 @@ def _material_winner(grid):
     return None
 
 
+def _pseudo_legal_moves(grid, color):
+    """Return all moves for `color` without filtering for leaving the king in check.
+    Used only in rollouts where speed matters more than perfect legality."""
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            piece = grid[r][c]
+            if piece and piece.get_color() == color:
+                for to_pos in (piece.get_possible_moves(grid, (r, c)) or []):
+                    moves.append(((r, c), to_pos))
+    return moves
+
+
+def _king_alive(grid, color):
+    for row in grid:
+        for piece in row:
+            if piece and piece.get_type() == "King" and piece.get_color() == color:
+                return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+
 class MCTSNode:
     __slots__ = ["grid", "color", "move", "parent", "children",
                  "wins", "visits", "_untried_moves"]
 
     def __init__(self, grid, color, move=None, parent=None):
-        self.grid = grid
-        self.color = color          # player whose turn it is to move FROM this state
-        self.move = move            # (from_pos, to_pos) that led to this state
+        self.grid   = grid
+        self.color  = color    # player whose turn it is to move FROM this state
+        self.move   = move     # (from_pos, to_pos) that led to this state
         self.parent = parent
-        self.children = []
-        self.wins = 0.0             # wins for the player who moved INTO this node
-        self.visits = 0
-        self._untried_moves = None  # lazily initialized
+        self.children       = []
+        self.wins           = 0.0   # wins for the player who moved INTO this node
+        self.visits         = 0
+        self._untried_moves = None  # lazily initialised
 
     def untried_moves(self):
         if self._untried_moves is None:
@@ -76,20 +117,20 @@ class MCTSNode:
         log_n = math.log(self.visits)
         return max(
             self.children,
-            key=lambda ch: (ch.wins / ch.visits) + c * math.sqrt(log_n / ch.visits)
+            key=lambda ch: (ch.wins / ch.visits) + c * math.sqrt(log_n / ch.visits),
         )
 
 
 class MonteCarloAgent(AgentInterface):
 
     def __init__(self, color, time_limit=2.0, max_simulations=1000,
-                 max_rollout_depth=50, exploration_constant=1.414):
-        self.color = color
-        self.time_limit = time_limit
-        self.max_simulations = max_simulations
-        self.max_rollout_depth = max_rollout_depth
-        self.C = exploration_constant
-        self._start_time = None
+                 max_rollout_depth=20, exploration_constant=1.414):
+        self.color              = color
+        self.time_limit         = time_limit
+        self.max_simulations    = max_simulations
+        self.max_rollout_depth  = max_rollout_depth   # reduced from 50; rollouts are fast now
+        self.C                  = exploration_constant
+        self._start_time        = None
 
     def get_move(self, grid, color) -> tuple:
         self._start_time = time.time()
@@ -101,7 +142,7 @@ class MonteCarloAgent(AgentInterface):
         for _ in range(self.max_simulations):
             if self._timed_out():
                 break
-            node = self._select(root)
+            node   = self._select(root)
             if not node.is_terminal():
                 node = self._expand(node)
             winner = self._rollout(node)
@@ -116,6 +157,10 @@ class MonteCarloAgent(AgentInterface):
     def _timed_out(self):
         return time.time() - self._start_time >= self.time_limit
 
+    # -------------------------------------------------------------------------
+    # MCTS phases
+    # -------------------------------------------------------------------------
+
     def _select(self, node):
         while node.is_fully_expanded() and not node.is_terminal():
             node = node.best_child_uct(self.C)
@@ -123,29 +168,42 @@ class MonteCarloAgent(AgentInterface):
 
     def _expand(self, node):
         moves = node.untried_moves()
-        move = moves.pop(random.randrange(len(moves)))
-        new_grid = _apply_move(node.grid, *move)
-        next_color = _opponent(node.color)
-        child = MCTSNode(new_grid, next_color, move=move, parent=node)
+        move  = moves.pop(random.randrange(len(moves)))
+        child = MCTSNode(
+            _apply_move(node.grid, *move),
+            color=_opponent(node.color),
+            move=move,
+            parent=node,
+        )
         node.children.append(child)
         return child
 
     def _rollout(self, node):
-        grid = node.grid
+        """Fast rollout using pseudo-legal moves.
+        King capture acts as checkmate signal, avoiding the expensive is_in_check scan."""
+        grid  = node.grid
         color = node.color
         position_counts = {}
+
         for _ in range(self.max_rollout_depth):
-            moves = get_legal_moves(grid, color)
+            moves = _pseudo_legal_moves(grid, color)
             if not moves:
-                if is_in_check(grid, color):
-                    return _opponent(color)  # checkmate
-                return None                  # stalemate
+                return None     # no pieces left ≈ draw
+
             h = _hash_grid(grid)
             position_counts[h] = position_counts.get(h, 0) + 1
             if position_counts[h] >= 3:
-                return None                  # 3-fold repetition → draw
-            grid = _apply_move(grid, *random.choice(moves))
-            color = _opponent(color)
+                return None     # 3-fold repetition → draw
+
+            grid  = _apply_move(grid, *random.choice(moves))
+
+            # If the king was just captured the moving side wins outright
+            opp = _opponent(color)
+            if not _king_alive(grid, opp):
+                return color
+
+            color = opp
+
         return _material_winner(grid)
 
     def _backpropagate(self, node, winner):
@@ -155,5 +213,7 @@ class MonteCarloAgent(AgentInterface):
             if winner is None:
                 current.wins += 0.5
             elif winner != current.color:
+                # current.color is the player to move FROM this node;
+                # current.wins counts wins for the player who moved INTO it.
                 current.wins += 1.0
             current = current.parent

@@ -1,4 +1,5 @@
 import copy
+import os
 import queue
 import threading
 
@@ -45,12 +46,13 @@ clock = pygame.time.Clock()
 # ---------------------------------------------------------------------------
 # Configuration  (mutated by the config modal)
 # ---------------------------------------------------------------------------
-AGENT_TYPES  = ["human", "random", "minimax", "montecarlo"]
+AGENT_TYPES  = ["human", "random", "minimax", "montecarlo", "stockfish"]
 AGENT_LABELS = {
     "human":      "Human",
     "random":     "Random",
     "minimax":    "Minimax",
     "montecarlo": "MCTS",
+    "stockfish":  "Stockfish",
 }
 AI_TIMES     = [0.5, 1.0, 2.0, 5.0]
 AI_TIME_LBLS = ["0.5 s", "1 s", "2 s", "5 s"]
@@ -58,10 +60,11 @@ H_TIMES      = [0, 60, 180, 300, 600]          # 0 = unlimited
 H_TIME_LBLS  = ["∞", "1 min", "3 min", "5 min", "10 min"]
 
 _cfg: dict = {
-    "white":      "montecarlo",
-    "black":      "minimax",
-    "ai_time":    2.0,
-    "human_time": 0,            # seconds per side, 0 = unlimited
+    "white":           "montecarlo",
+    "black":           "minimax",
+    "ai_time":         2.0,
+    "human_time":      0,            # seconds per side, 0 = unlimited
+    "stockfish_path":  "",           # explicit binary path; "" = auto-detect
 }
 
 # ---------------------------------------------------------------------------
@@ -72,6 +75,14 @@ def _make_agent(kind: str, color: str, ai_time: float):
     if kind == "random":      return RandomAgent(color)
     if kind == "minimax":     return MinimaxAgent(color, time_limit=ai_time)
     if kind == "montecarlo":  return MonteCarloAgent(color, time_limit=ai_time)
+    if kind == "stockfish":
+        from Agents.StockfishAgent import StockfishAgent
+        try:
+            return StockfishAgent(color, time_limit=ai_time,
+                                  stockfish_path=_cfg.get("stockfish_path") or None)
+        except FileNotFoundError as exc:
+            print(f"[Stockfish] {exc}")
+            return None
     return None
 
 WHITE_PLAYER = _make_agent(_cfg["white"], "white", _cfg["ai_time"])
@@ -205,10 +216,20 @@ def _undo() -> None:
 def _apply_config() -> None:
     """Build agents from _cfg, reset the board, and start playing."""
     global board, WHITE_PLAYER, BLACK_PLAYER, _paused, _step_requested, _in_config
+    global _sf_path_active, _sf_error
+    _sf_path_active = False
+    _sf_error       = ""
     _cancel_search()
     board        = Board(square_size=SQUARE_SIZE)
     WHITE_PLAYER = _make_agent(_cfg["white"], "white", _cfg["ai_time"])
     BLACK_PLAYER = _make_agent(_cfg["black"], "black", _cfg["ai_time"])
+    # If Stockfish was chosen but the binary wasn't found, stay in config and show error
+    sf_failed = ((_cfg["white"] == "stockfish" and WHITE_PLAYER is None) or
+                 (_cfg["black"] == "stockfish" and BLACK_PLAYER is None))
+    if sf_failed:
+        _sf_error  = "Binary not found — enter the full path to stockfish.exe above"
+        _in_config = True
+        return
     _h_clocks["white"] = float(_cfg["human_time"])
     _h_clocks["black"] = float(_cfg["human_time"])
     _history.clear()
@@ -221,6 +242,30 @@ def _open_config() -> None:
     global _in_config
     _cancel_search()
     _in_config = True
+
+
+def _browse_stockfish() -> None:
+    """Open a native file-picker dialog and store the chosen path in _cfg."""
+    global _sf_error
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.wm_attributes("-topmost", True)
+        path = filedialog.askopenfilename(
+            parent=root,
+            title="Select Stockfish binary",
+            filetypes=[("Executable", "*.exe"), ("All files", "*.*")],
+            initialdir=_cfg["stockfish_path"].rsplit("/", 1)[0]
+                       if _cfg["stockfish_path"] else os.path.expanduser("~"),
+        )
+        root.destroy()
+        if path:
+            _cfg["stockfish_path"] = path.replace("/", "\\")
+            _sf_error = ""
+    except Exception as exc:
+        print(f"[Browse] {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -258,17 +303,28 @@ def _centered(surface: pygame.Surface, text: str, size: int,
 # Config modal
 # ---------------------------------------------------------------------------
 _cfg_rects: dict[str, pygame.Rect] = {}   # populated each frame in config mode
+_sf_path_active: bool           = False   # True while user is typing the SF path
+_sf_path_rect:   pygame.Rect | None = None  # set by _draw_config when SF is selected
+_sf_error:       str            = ""      # non-empty when Stockfish failed to load
 
 
 def _draw_config(surface: pygame.Surface) -> dict[str, pygame.Rect]:
-    # Dim the board behind the modal
+    global _sf_path_rect
     dim = pygame.Surface((WIN_W, WIN_H), pygame.SRCALPHA)
     dim.fill((0, 0, 0, 180))
     surface.blit(dim, (0, 0))
 
-    MW, MH = 620, 468
-    MX = (WIN_W - MW) // 2
-    MY = (WIN_H - MH) // 2
+    sf_selected = (_cfg["white"] == "stockfish" or _cfg["black"] == "stockfish")
+
+    # Modal height adapts to however many agent types exist
+    n   = len(AGENT_TYPES)
+    MW  = 620
+    # Fixed sections: header 88px, agent rows n*42px, two option rows ~170px,
+    # optional SF path row +60px (+ 24px if error is showing), start 60px
+    sf_extra = (60 + (24 if _sf_error else 0)) if sf_selected else 0
+    MH  = 88 + n * 42 + 170 + sf_extra + 60
+    MX  = (WIN_W - MW) // 2
+    MY  = (WIN_H - MH) // 2
     pygame.draw.rect(surface, (28, 28, 40), (MX, MY, MW, MH), border_radius=12)
     pygame.draw.rect(surface, (70, 70, 110), (MX, MY, MW, MH), 2, border_radius=12)
 
@@ -276,62 +332,127 @@ def _draw_config(surface: pygame.Surface) -> dict[str, pygame.Rect]:
     cx = MX + MW // 2
 
     _centered(surface, "GAME SETUP", 36, (210, 210, 255), cx, MY + 28)
-    pygame.draw.line(surface, (60, 60, 90), (MX + 20, MY + 52), (MX + MW - 20, MY + 52))
+    pygame.draw.line(surface, (60, 60, 90),
+                     (MX + 20, MY + 52), (MX + MW - 20, MY + 52))
 
     # ── Player columns ──────────────────────────────────────────────────────
+    # agent_top: y of first agent button
+    agent_top = MY + 88
     for side, col_cx in (("white", MX + 155), ("black", MX + 465)):
         label = "WHITE" if side == "white" else "BLACK"
         col   = (230, 230, 230) if side == "white" else (160, 160, 160)
         _centered(surface, label, 22, col, col_cx, MY + 72)
 
         for i, atype in enumerate(AGENT_TYPES):
-            r   = pygame.Rect(col_cx - 70, MY + 88 + i * 42, 140, 34)
+            r   = pygame.Rect(col_cx - 70, agent_top + i * 42, 140, 34)
             sel = _cfg[side] == atype
-            _filled_btn(surface, AGENT_LABELS[atype], r,
-                        bg=(50, 90, 50) if sel else (40, 40, 58),
-                        highlight=sel)
+            bg  = (50, 90, 50) if sel else (40, 40, 58)
+            _filled_btn(surface, AGENT_LABELS[atype], r, bg=bg, highlight=sel)
             rects[f"{side}_{atype}"] = r
 
-    # vertical separator
-    sx = cx
-    pygame.draw.line(surface, (60, 60, 90), (sx, MY + 60), (sx, MY + 260))
+    # Vertical separator spans the column section
+    col_bot = agent_top + (n - 1) * 42 + 34   # bottom of last agent button
+    pygame.draw.line(surface, (60, 60, 90), (cx, MY + 60), (cx, col_bot + 4))
 
     # ── AI think time ────────────────────────────────────────────────────────
-    pygame.draw.line(surface, (60, 60, 90), (MX + 20, MY + 262), (MX + MW - 20, MY + 262))
-    _centered(surface, "AI THINK TIME  (per move)", 21, (170, 170, 200), cx, MY + 280)
+    sep1_y   = col_bot + 14
+    ai_lbl_y = sep1_y + 18
+    ai_btn_y = ai_lbl_y + 16
+    pygame.draw.line(surface, (60, 60, 90),
+                     (MX + 20, sep1_y), (MX + MW - 20, sep1_y))
+    _centered(surface, "AI THINK TIME  (per move)", 21, (170, 170, 200), cx, ai_lbl_y)
 
     btn_w  = 86
     gap    = 10
     row_w  = len(AI_TIMES) * btn_w + (len(AI_TIMES) - 1) * gap
     row_x0 = cx - row_w // 2
     for i, (t, lbl) in enumerate(zip(AI_TIMES, AI_TIME_LBLS)):
-        r   = pygame.Rect(row_x0 + i * (btn_w + gap), MY + 296, btn_w, 32)
+        r   = pygame.Rect(row_x0 + i * (btn_w + gap), ai_btn_y, btn_w, 32)
         sel = abs(_cfg["ai_time"] - t) < 0.01
-        _filled_btn(surface, lbl, r, bg=(50, 90, 50) if sel else (40, 40, 58),
-                    highlight=sel)
+        _filled_btn(surface, lbl, r,
+                    bg=(50, 90, 50) if sel else (40, 40, 58), highlight=sel)
         rects[f"ai_{t}"] = r
 
     # ── Human clock ──────────────────────────────────────────────────────────
-    pygame.draw.line(surface, (60, 60, 90), (MX + 20, MY + 342), (MX + MW - 20, MY + 342))
-    _centered(surface, "HUMAN CLOCK  (per side, total game)", 21, (170, 170, 200),
-              cx, MY + 360)
+    sep2_y   = ai_btn_y + 32 + 14
+    clk_lbl_y = sep2_y + 18
+    clk_btn_y = clk_lbl_y + 16
+    pygame.draw.line(surface, (60, 60, 90),
+                     (MX + 20, sep2_y), (MX + MW - 20, sep2_y))
+    _centered(surface, "HUMAN CLOCK  (per side, total game)", 21,
+              (170, 170, 200), cx, clk_lbl_y)
 
     btn_w  = 82
     gap    = 8
     row_w  = len(H_TIMES) * btn_w + (len(H_TIMES) - 1) * gap
     row_x0 = cx - row_w // 2
     for i, (t, lbl) in enumerate(zip(H_TIMES, H_TIME_LBLS)):
-        r   = pygame.Rect(row_x0 + i * (btn_w + gap), MY + 376, btn_w, 32)
+        r   = pygame.Rect(row_x0 + i * (btn_w + gap), clk_btn_y, btn_w, 32)
         sel = _cfg["human_time"] == t
-        _filled_btn(surface, lbl, r, bg=(50, 90, 50) if sel else (40, 40, 58),
-                    highlight=sel)
+        _filled_btn(surface, lbl, r,
+                    bg=(50, 90, 50) if sel else (40, 40, 58), highlight=sel)
         rects[f"ht_{t}"] = r
+
+    # ── Stockfish path input (only when Stockfish is selected) ───────────────
+    if sf_selected:
+        sf_sep_y   = clk_btn_y + 32 + 10
+        sf_lbl_y   = sf_sep_y + 18
+        sf_inp_top = sf_lbl_y + 14
+        pygame.draw.line(surface, (60, 60, 90),
+                         (MX + 20, sf_sep_y), (MX + MW - 20, sf_sep_y))
+        _centered(surface, "Stockfish binary path", 21, (170, 170, 200), cx, sf_lbl_y)
+
+        browse_rect = pygame.Rect(MX + MW - 20 - 88, sf_inp_top, 88, 30)
+        sf_rect     = pygame.Rect(MX + 20, sf_inp_top, MW - 40 - 88 - 8, 30)
+        _sf_path_rect = sf_rect
+
+        border_col = (120, 160, 220) if _sf_path_active else (70, 70, 110)
+        pygame.draw.rect(surface, (18, 18, 28), sf_rect, border_radius=4)
+        pygame.draw.rect(surface, border_col, sf_rect, 2, border_radius=4)
+        _filled_btn(surface, "Browse…", browse_rect, bg=(50, 60, 90), fsize=18)
+        rects["sf_browse"] = browse_rect
+
+        path = _cfg["stockfish_path"]
+        if path:
+            txt_surf = _f(18).render(path, True, (200, 200, 220))
+            clip_w   = sf_rect.width - 12
+            ty       = sf_rect.centery - txt_surf.get_height() // 2
+            if txt_surf.get_width() > clip_w:
+                src_x = txt_surf.get_width() - clip_w
+                surface.blit(txt_surf, (sf_rect.x + 6, ty),
+                             (src_x, 0, clip_w, txt_surf.get_height()))
+                cursor_x = sf_rect.right - 6
+            else:
+                surface.blit(txt_surf, (sf_rect.x + 6, ty))
+                cursor_x = sf_rect.x + 6 + txt_surf.get_width()
+            if _sf_path_active and pygame.time.get_ticks() // 500 % 2 == 0:
+                pygame.draw.line(surface, (200, 200, 220),
+                                 (cursor_x, sf_rect.y + 5),
+                                 (cursor_x, sf_rect.bottom - 5), 2)
+        else:
+            if _sf_path_active:
+                if pygame.time.get_ticks() // 500 % 2 == 0:
+                    pygame.draw.line(surface, (200, 200, 220),
+                                     (sf_rect.x + 8, sf_rect.y + 5),
+                                     (sf_rect.x + 8, sf_rect.bottom - 5), 2)
+            else:
+                ph = _f(18).render("Leave blank to auto-detect", True, (75, 75, 100))
+                surface.blit(ph, (sf_rect.x + 6,
+                                  sf_rect.centery - ph.get_height() // 2))
+
+        if _sf_error:
+            err = _f(16).render(_sf_error, True, (220, 80, 80))
+            surface.blit(err, err.get_rect(center=(cx, sf_rect.bottom + 12)))
+
+        rects["sf_path"] = sf_rect
+    else:
+        _sf_path_rect = None
 
     # ── Start button ─────────────────────────────────────────────────────────
     start_r = pygame.Rect(cx - 110, MY + MH - 52, 220, 40)
     pygame.draw.rect(surface, (36, 120, 56), start_r, border_radius=8)
     pygame.draw.rect(surface, (70, 190, 90), start_r, 2, border_radius=8)
-    _centered(surface, "▶  START GAME", 26, (255, 255, 255),
+    _centered(surface, "START GAME", 26, (255, 255, 255),
               start_r.centerx, start_r.centery)
     rects["start"] = start_r
 
@@ -339,20 +460,31 @@ def _draw_config(surface: pygame.Surface) -> dict[str, pygame.Rect]:
 
 
 def _config_click(mx: int, my: int) -> None:
+    global _sf_path_active, _sf_error
     for key, rect in _cfg_rects.items():
         if not rect.collidepoint(mx, my):
             continue
+        if key == "sf_path":
+            _sf_path_active = True
+            return
+        if key == "sf_browse":
+            _sf_path_active = False
+            _browse_stockfish()
+            return
+        _sf_path_active = False   # clicked something other than the path field
         if key == "start":
             _apply_config()
         elif "_" in key:
             prefix, _, val = key.partition("_")
             if prefix in ("white", "black"):
                 _cfg[prefix] = val
+                _sf_error = ""      # changing agent type clears stale error
             elif prefix == "ai":
                 _cfg["ai_time"] = float(val)
             elif prefix == "ht":
                 _cfg["human_time"] = int(val)
         return
+    _sf_path_active = False   # clicked outside all rects
 
 
 # ---------------------------------------------------------------------------
@@ -486,7 +618,16 @@ while running:
 
         if event.type == pygame.KEYDOWN:
             if _in_config:
-                if event.key == pygame.K_RETURN:
+                if _sf_path_active:
+                    if event.key in (pygame.K_RETURN, pygame.K_ESCAPE):
+                        _sf_path_active = False
+                    elif event.key == pygame.K_BACKSPACE:
+                        _cfg["stockfish_path"] = _cfg["stockfish_path"][:-1]
+                        _sf_error = ""
+                    elif event.unicode and event.unicode.isprintable():
+                        _cfg["stockfish_path"] += event.unicode
+                        _sf_error = ""
+                elif event.key == pygame.K_RETURN:
                     _apply_config()
             else:
                 if event.key == pygame.K_r:

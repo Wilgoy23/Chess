@@ -114,8 +114,9 @@ _search_gen  = 0
 _agent_thread: threading.Thread | None = None
 
 
-def _run_agent(agent, grid: list, turn: str, gen: int) -> None:
-    move = agent.get_move(grid, turn)
+def _run_agent(agent, grid: list, turn: str, castling_rights: dict,
+               en_passant_target, gen: int) -> None:
+    move = agent.get_move(grid, turn, castling_rights, en_passant_target)
     if move:
         with _move_lock:
             if gen == _search_gen:
@@ -143,7 +144,9 @@ def _start_search(agent) -> None:
     global _agent_thread
     _agent_thread = threading.Thread(
         target=_run_agent,
-        args=(agent, [row[:] for row in board.grid], board.turn, _search_gen),
+        args=(agent, [row[:] for row in board.grid], board.turn,
+              copy.deepcopy(board.castling_rights), board.en_passant_target,
+              _search_gen),
         daemon=True,
     )
     _agent_thread.start()
@@ -179,27 +182,37 @@ _history: list[dict] = []
 
 def _snapshot() -> dict:
     return {
-        "grid":     [[p for p in row] for row in board.grid],
-        "turn":     board.turn,
-        "castling": copy.deepcopy(board.castling_rights),
-        "last":     board.last_move,
-        "check":    board.in_check,
-        "over":     board.game_over,
-        "winner":   board.winner,
-        "clocks":   dict(_h_clocks),    # restore clocks on undo
+        "grid":            [[p for p in row] for row in board.grid],
+        "turn":            board.turn,
+        "castling":        copy.deepcopy(board.castling_rights),
+        "en_passant":      board.en_passant_target,
+        "halfmove_clock":  board.halfmove_clock,
+        "position_counts": dict(board.position_counts),
+        "last":            board.last_move,
+        "check":           board.in_check,
+        "over":            board.game_over,
+        "winner":          board.winner,
+        "draw_reason":     board.draw_reason,
+        "clocks":          dict(_h_clocks),    # restore clocks on undo
     }
 
 
 def _restore(snap: dict) -> None:
-    board.grid            = [[p for p in row] for row in snap["grid"]]
-    board.turn            = snap["turn"]
-    board.castling_rights = copy.deepcopy(snap["castling"])
-    board.last_move       = snap["last"]
-    board.in_check        = snap["check"]
-    board.game_over       = snap["over"]
-    board.winner          = snap["winner"]
-    board.selected        = None
-    board.valid_moves     = []
+    board.grid              = [[p for p in row] for row in snap["grid"]]
+    board.turn              = snap["turn"]
+    board.castling_rights   = copy.deepcopy(snap["castling"])
+    board.en_passant_target = snap["en_passant"]
+    board.halfmove_clock    = snap["halfmove_clock"]
+    board.position_counts   = dict(snap["position_counts"])
+    board.last_move         = snap["last"]
+    board.in_check          = snap["check"]
+    board.game_over         = snap["over"]
+    board.winner            = snap["winner"]
+    board.draw_reason       = snap["draw_reason"]
+    board.selected          = None
+    board.valid_moves       = []
+    board.promotion_pending = None
+    board._promo_rects      = {}
     _h_clocks.update(snap["clocks"])
 
 
@@ -250,6 +263,10 @@ def _browse_stockfish() -> None:
     try:
         import tkinter as tk
         from tkinter import filedialog
+        current = _cfg["stockfish_path"]
+        initialdir = (os.path.dirname(current)
+                       if current and os.path.isfile(current)
+                       else os.path.expanduser("~"))
         root = tk.Tk()
         root.withdraw()
         root.wm_attributes("-topmost", True)
@@ -257,8 +274,7 @@ def _browse_stockfish() -> None:
             parent=root,
             title="Select Stockfish binary",
             filetypes=[("Executable", "*.exe"), ("All files", "*.*")],
-            initialdir=_cfg["stockfish_path"].rsplit("/", 1)[0]
-                       if _cfg["stockfish_path"] else os.path.expanduser("~"),
+            initialdir=initialdir,
         )
         root.destroy()
         if path:
@@ -563,6 +579,14 @@ def _draw_ctrl_bar(surface: pygame.Surface, paused: bool) -> None:
 # ---------------------------------------------------------------------------
 # Game-over overlay
 # ---------------------------------------------------------------------------
+_DRAW_REASON_LABELS = {
+    "stalemate":              "Stalemate — Draw",
+    "fifty_move_rule":        "Fifty-move rule — Draw",
+    "threefold_repetition":   "Threefold repetition — Draw",
+    "insufficient_material":  "Insufficient material — Draw",
+}
+
+
 def _draw_game_over(surface: pygame.Surface) -> None:
     dim = pygame.Surface((BOARD_PX, BOARD_PX), pygame.SRCALPHA)
     dim.fill((0, 0, 0, 150))
@@ -573,7 +597,7 @@ def _draw_game_over(surface: pygame.Surface) -> None:
         headline = f"{board.winner.capitalize()} wins!"
         hcol     = (255, 215, 0)
     else:
-        headline = "Stalemate — Draw"
+        headline = _DRAW_REASON_LABELS.get(board.draw_reason, "Draw")
         hcol     = (210, 210, 210)
 
     txt  = _f(72).render(headline, True, hcol)

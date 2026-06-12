@@ -5,7 +5,7 @@ class Knight(PieceInterface):
         self.color = color
 
 
-    def get_possible_moves(self, board, position):
+    def get_possible_moves(self, board, position, en_passant_target=None):
         moves = []
         row, col = position
         # All 8 L-shaped jumps

@@ -7,6 +7,7 @@ from Pieces.Knight import Knight
 from Pieces.Bishop import Bishop
 from Pieces.Queen import Queen
 from Pieces.King import King
+import rules
 
 
 class Board:
@@ -16,9 +17,14 @@ class Board:
     VALID_MOVE_COLOR = (100, 111, 64)
     LAST_MOVE_COLOR = (205, 210, 106)
     CHECK_COLOR = (220, 20, 20)
+    PROMO_BG_COLOR = (240, 240, 240)
+    PROMO_BORDER_COLOR = (80, 80, 80)
 
     _COL_NAMES = "abcdefgh"
     _ROW_NAMES = "87654321"  # row 0 = rank 8
+
+    # Algebraic piece letters used in the console log for promotions
+    _PROMO_LETTER = {"Queen": "Q", "Rook": "R", "Bishop": "B", "Knight": "N"}
 
     UNICODE = {
         "white": {
@@ -41,13 +47,20 @@ class Board:
             "white": {"kingside": True, "queenside": True},
             "black": {"kingside": True, "queenside": True},
         }
+        self.en_passant_target = None   # (row, col) capturable en passant, or None
+        self.halfmove_clock = 0          # half-moves since the last pawn move/capture
+        self.position_counts = {}        # position signature -> times seen
         self.last_move = None   # (from_pos, to_pos) of the most recent move
         self.in_check = False   # True when the side to move is in check
         self.game_over = False
-        self.winner = None      # "white", "black", or None (stalemate)
+        self.winner = None      # "white", "black", or None (draw)
+        self.draw_reason = None # None, or "stalemate"/"fifty_move_rule"/"threefold_repetition"/"insufficient_material"
+        self.promotion_pending = None  # (from_pos, to_pos) awaiting a human promotion choice
+        self._promo_rects = {}
         self.images = {}
         self._font = None
         self._load_pieces()
+        self._record_position()
 
     # -------------------------------------------------------------------------
     # Board setup
@@ -106,71 +119,14 @@ class Board:
     def _in_bounds(self, row, col):
         return 0 <= row < 8 and 0 <= col < 8
 
-    # -------------------------------------------------------------------------
-    # Check / legality helpers
-    # -------------------------------------------------------------------------
-
-    def _is_square_attacked(self, grid, row, col, by_color):
-        """Return True if (row, col) is reachable by any piece of by_color."""
-        for r in range(8):
-            for c in range(8):
-                p = grid[r][c]
-                if p and p.get_color() == by_color:
-                    if (row, col) in (p.get_possible_moves(grid, (r, c)) or []):
-                        return True
-        return False
-
-    def _is_in_check(self, grid, color):
-        """Return True if color's king is currently attacked."""
-        opponent = "black" if color == "white" else "white"
-        for r in range(8):
-            for c in range(8):
-                p = grid[r][c]
-                if p and p.get_type() == "King" and p.get_color() == color:
-                    return self._is_square_attacked(grid, r, c, opponent)
-        return False  # king not found (shouldn't happen)
-
-    def _get_legal_moves(self, from_pos):
-        """Return moves for the piece at from_pos that don't leave own king in check."""
-        fr, fc = from_pos
-        piece = self.grid[fr][fc]
-        if piece is None:
-            return []
-        color = piece.get_color()
-        raw = list(piece.get_possible_moves(self.grid, from_pos) or [])
-        if piece.get_type() == "King":
-            raw += self._get_castling_moves(color)
-
-        legal = []
-        for to_pos in raw:
-            tr, tc = to_pos
-            test = [row[:] for row in self.grid]
-            test[tr][tc] = test[fr][fc]
-            test[fr][fc] = None
-            # Simulate castling rook relocation in the test grid
-            if piece.get_type() == "King" and abs(tc - fc) == 2:
-                if tc == 6:
-                    test[fr][5] = test[fr][7]
-                    test[fr][7] = None
-                else:
-                    test[fr][3] = test[fr][0]
-                    test[fr][0] = None
-            if not self._is_in_check(test, color):
-                legal.append(to_pos)
-        return legal
-
-    def _has_any_legal_move(self, color):
-        """Return True if color has at least one legal move."""
-        for r in range(8):
-            for c in range(8):
-                p = self.grid[r][c]
-                if p and p.get_color() == color:
-                    if self._get_legal_moves((r, c)):
-                        return True
-        return False
-
     def _square_name(self, row, col):
         return f"{self._COL_NAMES[col]}{self._ROW_NAMES[row]}"
+
+    def _record_position(self):
+        """Record the current position for threefold-repetition tracking."""
+        key = rules.position_key(self.grid, self.turn, self.castling_rights, self.en_passant_target)
+        self.position_counts[key] = self.position_counts.get(key, 0) + 1
+        return key
 
     # -------------------------------------------------------------------------
     # Input handling
@@ -178,6 +134,9 @@ class Board:
 
     def handle_click(self, pixel_x, pixel_y):
         if self.game_over:
+            return
+        if self.promotion_pending:
+            self._handle_promotion_click(pixel_x, pixel_y)
             return
         col = pixel_x // self.square_size
         row = pixel_y // self.square_size
@@ -189,7 +148,12 @@ class Board:
 
         if self.selected:
             if (row, col) in self.valid_moves:
-                self._move(self.selected, (row, col))
+                from_pos = self.selected
+                to_pos = (row, col)
+                if rules.is_promotion_move(self.grid, from_pos, to_pos):
+                    self.promotion_pending = (from_pos, to_pos)
+                else:
+                    self._move(from_pos, to_pos)
                 return
             if (row, col) == self.selected:
                 self.selected = None
@@ -198,91 +162,83 @@ class Board:
 
         if piece and piece.get_color() == self.turn:
             self.selected = (row, col)
-            self.valid_moves = self._get_legal_moves((row, col))
+            self.valid_moves = rules.get_legal_moves_from(
+                self.grid, (row, col), self.castling_rights, self.en_passant_target
+            )
         else:
             self.selected = None
             self.valid_moves = []
 
-    def _get_castling_moves(self, color):
-        moves = []
-        row = 7 if color == "white" else 0
-        rights = self.castling_rights[color]
-        opponent = "black" if color == "white" else "white"
+    def _handle_promotion_click(self, pixel_x, pixel_y):
+        from_pos, to_pos = self.promotion_pending
+        for piece_type, rect in self._promo_rects.items():
+            if rect.collidepoint(pixel_x, pixel_y):
+                self.promotion_pending = None
+                self._move(from_pos, to_pos, promotion=piece_type)
+                return
+        # Clicked outside the picker: cancel the pending promotion
+        self.promotion_pending = None
+        self.selected = None
+        self.valid_moves = []
+        self._promo_rects = {}
 
-        king = self.grid[row][4]
-        if king is None or king.get_type() != "King":
-            return moves
-        # Can't castle while in check
-        if self._is_in_check(self.grid, color):
-            return moves
-
-        # Kingside: e→f→g must be clear and f,g not attacked
-        if (rights["kingside"]
-                and self.grid[row][5] is None
-                and self.grid[row][6] is None
-                and not self._is_square_attacked(self.grid, row, 5, opponent)
-                and not self._is_square_attacked(self.grid, row, 6, opponent)):
-            moves.append((row, 6))
-
-        # Queenside: b,c,d must be empty; d,c not attacked (king passes through d,c)
-        if (rights["queenside"]
-                and self.grid[row][1] is None
-                and self.grid[row][2] is None
-                and self.grid[row][3] is None
-                and not self._is_square_attacked(self.grid, row, 3, opponent)
-                and not self._is_square_attacked(self.grid, row, 2, opponent)):
-            moves.append((row, 2))
-
-        return moves
-
-    def _move(self, from_pos, to_pos):
+    def _move(self, from_pos, to_pos, promotion=None):
         fr, fc = from_pos
-        piece    = self.grid[fr][fc]
-        captured = self.grid[to_pos[0]][to_pos[1]]
+        tr, tc = to_pos
+        piece = self.grid[fr][fc]
+        mover = piece.get_color()
 
-        # Revoke castling rights if a corner rook is captured
-        if captured is not None and captured.get_type() == "Rook":
-            if   to_pos == (7, 0): self.castling_rights["white"]["queenside"] = False
-            elif to_pos == (7, 7): self.castling_rights["white"]["kingside"]  = False
-            elif to_pos == (0, 0): self.castling_rights["black"]["queenside"] = False
-            elif to_pos == (0, 7): self.castling_rights["black"]["kingside"]  = False
+        # Determine move tags from pre-move state, for the console log
+        is_castle = piece.get_type() == "King" and abs(tc - fc) == 2
+        is_en_passant = (
+            piece.get_type() == "Pawn"
+            and to_pos == self.en_passant_target
+            and tc != fc
+            and self.grid[tr][tc] is None
+        )
+        is_promotion = rules.is_promotion_move(self.grid, from_pos, to_pos)
 
-        # Delegate grid mutations to the piece
-        for origin, destination, piece_obj in piece.move(self.grid, from_pos, to_pos):
-            self.grid[destination[0]][destination[1]] = piece_obj
-            self.grid[origin[0]][origin[1]] = None
+        self.grid, self.castling_rights, self.en_passant_target, is_irreversible = rules.apply_move(
+            self.grid, from_pos, to_pos, self.castling_rights, self.en_passant_target, promotion=promotion
+        )
+        self.halfmove_clock = 0 if is_irreversible else self.halfmove_clock + 1
 
-        # Board-owned castling rights revocation
-        ptype, color = piece.get_type(), piece.get_color()
-        if ptype == "King":
-            self.castling_rights[color]["kingside"]  = False
-            self.castling_rights[color]["queenside"] = False
-        if ptype == "Rook":
-            if   (fr, fc) == (7, 0): self.castling_rights["white"]["queenside"] = False
-            elif (fr, fc) == (7, 7): self.castling_rights["white"]["kingside"]  = False
-            elif (fr, fc) == (0, 0): self.castling_rights["black"]["queenside"] = False
-            elif (fr, fc) == (0, 7): self.castling_rights["black"]["kingside"]  = False
+        self.last_move         = (from_pos, to_pos)
+        self.turn               = "black" if self.turn == "white" else "white"
+        self.selected           = None
+        self.valid_moves        = []
+        self.promotion_pending  = None
+        self._promo_rects       = {}
 
         # Console move log
-        mover = piece.get_color()
+        tag = ""
+        if is_castle:
+            tag = "  (O-O)" if tc == 6 else "  (O-O-O)"
+        elif is_en_passant:
+            tag = "  (e.p.)"
+        elif is_promotion:
+            tag = f"  (={self._PROMO_LETTER.get(promotion or 'Queen', 'Q')})"
         print(f"[{mover.capitalize():5}] {piece.get_type()} "
-              f"{self._square_name(fr, fc)} → {self._square_name(*to_pos)}")
+              f"{self._square_name(fr, fc)} → {self._square_name(*to_pos)}{tag}")
 
-        self.last_move   = (from_pos, to_pos)
-        self.turn        = "black" if self.turn == "white" else "white"
-        self.selected    = None
-        self.valid_moves = []
+        # Check / checkmate / stalemate / draw detection
+        self._record_position()
+        self.in_check = rules.in_check(self.grid, self.turn)
+        result = rules.get_game_result(
+            self.grid, self.turn, self.castling_rights, self.en_passant_target,
+            self.halfmove_clock, self.position_counts,
+        )
 
-        # Check / checkmate / stalemate detection
-        self.in_check = self._is_in_check(self.grid, self.turn)
-        if not self._has_any_legal_move(self.turn):
+        self.draw_reason = None
+        if result == "checkmate":
             self.game_over = True
-            if self.in_check:
-                self.winner = mover   # the side that just moved wins
-                print(f"Checkmate! {mover.capitalize()} wins.")
-            else:
-                self.winner = None
-                print("Stalemate! Draw.")
+            self.winner = mover   # the side that just moved wins
+            print(f"Checkmate! {mover.capitalize()} wins.")
+        elif result is not None:
+            self.game_over = True
+            self.winner = None
+            self.draw_reason = result
+            print(f"Draw ({result.replace('_', ' ')}).")
         elif self.in_check:
             print(f"  → {self.turn.capitalize()} is in check!")
 
@@ -301,6 +257,7 @@ class Board:
         self._draw_highlights(surface)
         self._draw_valid_moves(surface)
         self._draw_pieces(surface)
+        self._draw_promotion_picker(surface)
 
     def _draw_squares(self, surface):
         for row in range(8):
@@ -369,3 +326,38 @@ class Board:
                     text = self._font.render(symbol, True, text_color)
                     rect = text.get_rect(center=(x + self.square_size // 2, y + self.square_size // 2))
                     surface.blit(text, rect)
+
+    def _draw_promotion_picker(self, surface):
+        if not self.promotion_pending:
+            self._promo_rects = {}
+            return
+
+        from_pos, to_pos = self.promotion_pending
+        color = self.grid[from_pos[0]][from_pos[1]].get_color()
+        _, tc = to_pos
+
+        # Dim the board behind the picker
+        dim = pygame.Surface((self.square_size * 8, self.square_size * 8), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 140))
+        surface.blit(dim, (0, 0))
+
+        # Stack the four choices toward the promoting side: white promotes on
+        # row 0 (picker grows downward), black on row 7 (grows upward).
+        rows = range(0, 4) if color == "white" else range(7, 3, -1)
+
+        self._promo_rects = {}
+        for piece_type, row in zip(rules.PROMOTION_TYPES, rows):
+            rect = pygame.Rect(tc * self.square_size, row * self.square_size,
+                                self.square_size, self.square_size)
+            pygame.draw.rect(surface, self.PROMO_BG_COLOR, rect)
+            pygame.draw.rect(surface, self.PROMO_BORDER_COLOR, rect, 2)
+
+            key = f"{color}_{piece_type}"
+            if key in self.images:
+                surface.blit(self.images[key], rect.topleft)
+            elif self._font:
+                symbol = self.UNICODE[color][piece_type]
+                text = self._font.render(symbol, True, (0, 0, 0))
+                surface.blit(text, text.get_rect(center=rect.center))
+
+            self._promo_rects[piece_type] = rect

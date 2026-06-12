@@ -4,7 +4,7 @@ class Rook(PieceInterface):
     def __init__(self, color):
         self.color = color
 
-    def get_possible_moves(self, board, position):
+    def get_possible_moves(self, board, position, en_passant_target=None):
         moves = []
         row, col = position
         # Rooks slide along ranks and files

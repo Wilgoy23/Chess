@@ -4,7 +4,7 @@ class King(PieceInterface):
     def __init__(self, color):
         self.color = color
 
-    def get_possible_moves(self, board, position):
+    def get_possible_moves(self, board, position, en_passant_target=None):
         moves = []
         row, col = position
         # King moves one square in any direction
@@ -25,7 +25,8 @@ class King(PieceInterface):
     def get_type(self):
         return "King"
 
-    def move(self, grid: list, from_pos: tuple, to_pos: tuple) -> list:
+    def move(self, grid: list, from_pos: tuple, to_pos: tuple,
+             promotion: str = None, en_passant_target: tuple = None) -> list:
         fr, fc = from_pos
         tc = to_pos[1]
         mutations = [(from_pos, to_pos, self)]

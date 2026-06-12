@@ -1,7 +1,6 @@
 import time
 from Agents.AgentInterface import AgentInterface
-from Agents.chess_utils import get_legal_moves, is_in_check
-from Pieces.Queen import Queen
+import rules
 
 PIECE_VALUES = {
     "Pawn": 1, "Knight": 3, "Bishop": 3,
@@ -78,7 +77,7 @@ PST_KING_MID = [
     [-0.30, -0.40, -0.40, -0.50, -0.50, -0.40, -0.40, -0.30],
     [-0.20, -0.30, -0.30, -0.40, -0.40, -0.30, -0.30, -0.20],
     [-0.10, -0.20, -0.20, -0.20, -0.20, -0.20, -0.20, -0.10],
-    [ 0.20,  0.20,  0.00,  0.00,  0.00,  0.00,  0.20,  0.20],
+    [ 0.10,  0.10, -0.10, -0.20, -0.20, -0.10,  0.10,  0.10],
     [ 0.20,  0.30,  0.10,  0.00,  0.00,  0.10,  0.30,  0.20],
 ]
 
@@ -99,53 +98,47 @@ PST_MAP = {
 }
 
 
+# Single-letter piece codes for hashing ("N" disambiguates Knight from King)
+_HASH_LETTER = {
+    "Pawn": "P", "Knight": "N", "Bishop": "B",
+    "Rook": "R", "Queen": "Q", "King": "K",
+}
+
+
 def _hash_own_pieces(grid, color) -> tuple:
     """Hash only `color`'s piece positions, ignoring the opponent.
     Repeated own-piece configurations across game turns indicate oscillation."""
     return tuple(
-        piece.get_type()[0] if (piece and piece.get_color() == color) else '.'
+        _HASH_LETTER[piece.get_type()] if (piece and piece.get_color() == color) else '.'
         for row in grid
         for piece in row
     )
 
 
+def _pst_value(ptype, color, row, col):
+    """PST value for a piece of `color` standing on (row, col)."""
+    table = PST_MAP.get(ptype) or PST_KING_MID
+    pst_row = row if color == "white" else (7 - row)
+    return table[pst_row][col]
+
+
 def _order_moves(grid, moves):
-    """Sort moves so winning captures come first (MVV-LVA), improving alpha-beta cutoffs."""
+    """Sort moves to improve alpha-beta cutoffs: winning captures first
+    (MVV-LVA, offset above all quiet moves), then quiet moves by how much
+    they improve the mover's piece-square value."""
     def score(mv):
         fr, fc = mv[0]
         tr, tc = mv[1]
         victim   = grid[tr][tc]
         attacker = grid[fr][fc]
-        if victim is None:
-            return -1   # non-capture: search last
-        return (PIECE_VALUES.get(victim.get_type(), 0) * 10
-                - PIECE_VALUES.get(attacker.get_type(), 0))
+        if victim is not None:
+            return (100
+                    + PIECE_VALUES.get(victim.get_type(), 0) * 10
+                    - PIECE_VALUES.get(attacker.get_type(), 0))
+        ptype  = attacker.get_type()
+        pcolor = attacker.get_color()
+        return _pst_value(ptype, pcolor, tr, tc) - _pst_value(ptype, pcolor, fr, fc)
     return sorted(moves, key=score, reverse=True)
-
-
-def _apply_move(grid, from_pos, to_pos):
-    """Return a new grid after applying the move. Uses shallow copy (pieces are immutable)."""
-    new_grid = [row[:] for row in grid]
-    fr, fc = from_pos
-    tr, tc = to_pos
-    piece = new_grid[fr][fc]
-    new_grid[tr][tc] = piece
-    new_grid[fr][fc] = None
-
-    if piece is not None:
-        if piece.get_type() == "King" and abs(tc - fc) == 2:
-            if tc == 6:                         # kingside castling
-                new_grid[tr][5] = new_grid[tr][7]
-                new_grid[tr][7] = None
-            else:                               # queenside castling
-                new_grid[tr][3] = new_grid[tr][0]
-                new_grid[tr][0] = None
-        if piece.get_type() == "Pawn":
-            promo_row = 0 if piece.get_color() == "white" else 7
-            if tr == promo_row:
-                new_grid[tr][tc] = Queen(piece.get_color())
-
-    return new_grid
 
 
 class MinimaxAgent(AgentInterface):
@@ -164,7 +157,7 @@ class MinimaxAgent(AgentInterface):
     # Public entry point
     # -------------------------------------------------------------------------
 
-    def get_move(self, grid, _color):
+    def get_move(self, grid, _color, castling_rights, en_passant_target=None):
         self._deadline = time.time() + self.time_limit
 
         # Record the current own-piece arrangement as a real game position.
@@ -173,13 +166,16 @@ class MinimaxAgent(AgentInterface):
 
         best_move = None
 
-        # Iterative deepening: always keep the result from the last complete search.
-        # This guarantees we return a valid move even when the clock expires mid-search.
+        # Iterative deepening: keep only results from iterations that finished
+        # before the deadline. A depth that times out mid-search produces scores
+        # from inconsistent depths (subtrees collapse to static evals), so its
+        # partial best move is garbage and must not overwrite the previous one.
         for depth in range(1, self.max_depth + 1):
             if self._timed_out():
                 break
-            _, move = self._minimax(grid, depth, float("-inf"), float("inf"), True)
-            if move is not None:
+            _, move = self._minimax(grid, castling_rights, en_passant_target,
+                                     depth, float("-inf"), float("inf"), True)
+            if move is not None and (depth == 1 or not self._timed_out()):
                 best_move = move
 
         return best_move
@@ -191,15 +187,15 @@ class MinimaxAgent(AgentInterface):
     def _timed_out(self):
         return time.time() >= self._deadline
 
-    def _minimax(self, grid, depth, alpha, beta, maximizing):
+    def _minimax(self, grid, castling_rights, en_passant_target, depth, alpha, beta, maximizing):
         if depth == 0 or self._timed_out():
-            return self._evaluate(grid), None
+            return self._evaluate(grid, castling_rights), None
 
         color = self.color if maximizing else self._opponent
-        moves = get_legal_moves(grid, color)
+        moves = rules.get_legal_moves(grid, color, castling_rights, en_passant_target)
 
         if not moves:
-            if is_in_check(grid, color):
+            if rules.in_check(grid, color):
                 # Bug fix: use +depth so shallower checkmates (fewer moves away)
                 # score higher for the winning side, not lower.
                 return ((-100_000 - depth) if maximizing else (100_000 + depth)), None
@@ -213,8 +209,10 @@ class MinimaxAgent(AgentInterface):
             for fm, tm in moves:
                 if self._timed_out():
                     break
-                score, _ = self._minimax(_apply_move(grid, fm, tm),
-                                         depth - 1, alpha, beta, False)
+                new_grid, new_cr, new_ep, _ = rules.apply_move(
+                    grid, fm, tm, castling_rights, en_passant_target)
+                score, _ = self._minimax(new_grid, new_cr, new_ep,
+                                          depth - 1, alpha, beta, False)
                 if score > best:
                     best      = score
                     best_move = (fm, tm)
@@ -227,8 +225,10 @@ class MinimaxAgent(AgentInterface):
             for fm, tm in moves:
                 if self._timed_out():
                     break
-                score, _ = self._minimax(_apply_move(grid, fm, tm),
-                                         depth - 1, alpha, beta, True)
+                new_grid, new_cr, new_ep, _ = rules.apply_move(
+                    grid, fm, tm, castling_rights, en_passant_target)
+                score, _ = self._minimax(new_grid, new_cr, new_ep,
+                                          depth - 1, alpha, beta, True)
                 if score < best:
                     best      = score
                     best_move = (fm, tm)
@@ -241,7 +241,7 @@ class MinimaxAgent(AgentInterface):
     # Static evaluation — positive = good for self.color
     # -------------------------------------------------------------------------
 
-    def _evaluate(self, grid):
+    def _evaluate(self, grid, castling_rights):
         material       = 0.0
         pst_score      = 0.0
         my_moves       = 0
@@ -276,11 +276,14 @@ class MinimaxAgent(AgentInterface):
                 if ptype == "Pawn":
                     pawn_cols[pcolor].append(col)
 
-                raw = piece.get_possible_moves(grid, (row, col)) or []
-                if pcolor == self.color:
-                    my_moves  += len(raw)
-                else:
-                    opp_moves += len(raw)
+                # King mobility is not an asset in the midgame — counting it
+                # rewards king wandering, so the king is excluded here.
+                if ptype != "King":
+                    raw = piece.get_possible_moves(grid, (row, col)) or []
+                    if pcolor == self.color:
+                        my_moves  += len(raw)
+                    else:
+                        opp_moves += len(raw)
 
         # Game phase: 1.0 = opening material, 0.0 = bare endgame
         phase_ratio = min(1.0, phase_material / PHASE_TOTAL_START)
@@ -330,6 +333,25 @@ class MinimaxAgent(AgentInterface):
         if bishop_count[self.color]    == 2: bishop_pair += 0.50
         if bishop_count[self._opponent] == 2: bishop_pair -= 0.50
 
+        # Castling: reward keeping castling rights, and reward having castled
+        # (king on g/c-file of its back rank with the rook beside it on f/d).
+        # Without these terms a king shuffle like Ke1-e2 costs nothing even
+        # though it forfeits castling forever.
+        castling_score = 0.0
+        for pcolor in ("white", "black"):
+            sign      = 1 if pcolor == self.color else -1
+            rights    = castling_rights[pcolor]
+            back_rank = 7 if pcolor == "white" else 0
+            castling_score += sign * 0.15 * phase_ratio * (
+                rights["kingside"] + rights["queenside"])
+
+            kpos = king_pos.get(pcolor)
+            if kpos and kpos[0] == back_rank and kpos[1] in (6, 2):
+                rook_col = 5 if kpos[1] == 6 else 3
+                rook = grid[back_rank][rook_col]
+                if rook and rook.get_type() == "Rook" and rook.get_color() == pcolor:
+                    castling_score += sign * 0.40 * phase_ratio
+
         # Endgame mating bonus: drive opponent king to a corner
         endgame_bonus = 0.0
         if phase_ratio < 0.5 and material > 0.5 and len(king_pos) == 2:
@@ -357,6 +379,7 @@ class MinimaxAgent(AgentInterface):
             + king_safety  * 0.15  * phase_ratio
             + pawn_struct  * 0.20
             + bishop_pair
+            + castling_score
             + endgame_bonus
             - repetition_penalty
         )

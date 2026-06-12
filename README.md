@@ -10,6 +10,12 @@ A In-Progress chess engine built in Python with Pygame. Supports human vs. human
 - Non-blocking AI via background threading — the board stays responsive while the engine thinks
 - Console move log in algebraic notation
 
+### Rules implemented
+
+- En passant capture
+- Pawn promotion with a choice of Queen, Rook, Bishop, or Knight (human players pick via an on-board picker; AI agents always promote to Queen)
+- Draw detection: fifty-move rule, threefold repetition, and insufficient material (in addition to stalemate)
+
 ## Agents
 
 | Agent | Algorithm | Strength |
@@ -32,7 +38,7 @@ The static evaluator combines:
 
 ### MonteCarloAgent
 
-Standard MCTS loop: selection via UCT (C = 1.414), random expansion, random rollout capped at 50 half-moves, backpropagation. Rollouts respect 3-fold repetition (scored as a draw) and detect checkmate/stalemate. The best move is chosen by highest visit count.
+Standard MCTS loop: selection via UCT (C = 1.414), random expansion, capture-biased rollout capped at 20 half-moves, backpropagation. Rollouts prefer the most valuable capture over a random move (80% on the first ply, 50% after), respect 3-fold repetition (scored as a draw), and end in a graded score from the material balance, so every captured point shifts the result. Terminal nodes (checkmate/stalemate) are scored exactly. The best move is chosen by highest visit count (win rate as tie-break).
 
 ## Project structure
 
@@ -40,6 +46,8 @@ Standard MCTS loop: selection via UCT (C = 1.414), random expansion, random roll
 Chess/
 ├── main.py                  # Entry point, game loop, agent threading
 ├── board.py                 # Board state, rendering, move execution
+├── rules.py                 # Central rules engine: move generation, check,
+│                             #   move application, game-end conditions
 ├── Pieces/
 │   ├── PieceInterface.py    # Abstract base class for all pieces
 │   ├── Pawn.py
@@ -50,10 +58,10 @@ Chess/
 │   └── King.py
 ├── Agents/
 │   ├── AgentInterface.py    # Abstract base class for all agents
-│   ├── chess_utils.py       # Shared move generation and check utilities
 │   ├── MinimaxAgent.py
 │   ├── MonteCarloAgent.py
-│   └── RandomAgent.py
+│   ├── RandomAgent.py
+│   └── StockfishAgent.py
 └── pieces/                  # PNG piece images (wPawn.png, bRook.png, …)
 ```
 
@@ -102,17 +110,22 @@ BLACK_PLAYER = MinimaxAgent("black")
 
 ## Extending
 
-To add a new agent, subclass `AgentInterface` and implement `get_move(grid, color) -> tuple`:
+To add a new agent, subclass `AgentInterface` and implement
+`get_move(self, grid, color, castling_rights, en_passant_target=None) -> tuple`:
 
 ```python
 from Agents.AgentInterface import AgentInterface
+import rules
 
 class MyAgent(AgentInterface):
     def __init__(self, color):
         self.color = color
 
-    def get_move(self, grid, color):
-        # grid: 8x8 list of piece objects (or None)
+    def get_move(self, grid, color, castling_rights, en_passant_target=None):
+        # grid              : 8x8 list of piece objects (or None)
+        # castling_rights   : {"white": {"kingside": bool, "queenside": bool},
+        #                       "black": {...}}
+        # en_passant_target : (row, col) capturable en passant this move, or None
         # return: ((from_row, from_col), (to_row, to_col))
-        ...
+        return rules.get_legal_moves(grid, color, castling_rights, en_passant_target)[0]
 ```

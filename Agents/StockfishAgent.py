@@ -29,13 +29,8 @@ _COL_IDX = {c: i for i, c in enumerate("abcdefgh")}
 # FEN helpers
 # ---------------------------------------------------------------------------
 
-def _grid_to_fen(grid, color: str) -> str:
-    """Convert the internal 8x8 grid to a FEN position string.
-
-    Castling rights are inferred from piece presence on home squares,
-    the same proxy used by chess_utils._get_castling_moves.
-    En passant is omitted because the AgentInterface does not expose it.
-    """
+def _grid_to_fen(grid, color: str, castling_rights, en_passant_target=None) -> str:
+    """Convert the internal board state to a FEN position string."""
     ranks = []
     for row in range(8):            # row 0 = rank 8, row 7 = rank 1
         s, empty = "", 0
@@ -55,28 +50,25 @@ def _grid_to_fen(grid, color: str) -> str:
             s += str(empty)
         ranks.append(s)
 
-    # Castling rights inferred from piece positions
     castling = ""
-    wk = grid[7][4]
-    if wk and wk.get_type() == "King" and wk.get_color() == "white":
-        r = grid[7][7]
-        if r and r.get_type() == "Rook" and r.get_color() == "white":
-            castling += "K"
-        r = grid[7][0]
-        if r and r.get_type() == "Rook" and r.get_color() == "white":
-            castling += "Q"
-    bk = grid[0][4]
-    if bk and bk.get_type() == "King" and bk.get_color() == "black":
-        r = grid[0][7]
-        if r and r.get_type() == "Rook" and r.get_color() == "black":
-            castling += "k"
-        r = grid[0][0]
-        if r and r.get_type() == "Rook" and r.get_color() == "black":
-            castling += "q"
-
-    active   = "w" if color == "white" else "b"
+    if castling_rights["white"]["kingside"]:
+        castling += "K"
+    if castling_rights["white"]["queenside"]:
+        castling += "Q"
+    if castling_rights["black"]["kingside"]:
+        castling += "k"
+    if castling_rights["black"]["queenside"]:
+        castling += "q"
     castling = castling or "-"
-    return f"{'/'.join(ranks)} {active} {castling} - 0 1"
+
+    if en_passant_target is not None:
+        er, ec = en_passant_target
+        en_passant = f"{'abcdefgh'[ec]}{8 - er}"
+    else:
+        en_passant = "-"
+
+    active = "w" if color == "white" else "b"
+    return f"{'/'.join(ranks)} {active} {castling} {en_passant} 0 1"
 
 
 def _uci_to_move(uci: str) -> tuple:
@@ -146,8 +138,8 @@ class StockfishAgent(AgentInterface):
     # AgentInterface
     # -------------------------------------------------------------------------
 
-    def get_move(self, grid, color) -> tuple | None:
-        fen = _grid_to_fen(grid, color)
+    def get_move(self, grid, color, castling_rights, en_passant_target=None) -> tuple | None:
+        fen = _grid_to_fen(grid, color, castling_rights, en_passant_target)
         self._send(f"position fen {fen}")
         self._send(f"go movetime {max(1, int(self.time_limit * 1000))}")
 
@@ -199,6 +191,31 @@ class StockfishAgent(AgentInterface):
         for p in candidates:
             if p and os.path.isfile(p):
                 return p
+
+        # Last resort: Stockfish is usually downloaded as a zip and extracted
+        # into a versioned subfolder (e.g. Downloads\stockfish-windows-x86-64-
+        # avx2\stockfish\stockfish-windows-x86-64-avx2.exe). Search a few
+        # levels deep in the places people tend to extract zips.
+        for base in (os.path.join(home, "Downloads"), os.path.join(home, "Desktop"), home):
+            found = StockfishAgent._search_for_binary(base, max_depth=3)
+            if found:
+                return found
+        return None
+
+    @staticmethod
+    def _search_for_binary(base: str, max_depth: int = 3) -> str | None:
+        """Recursively look under `base` (up to `max_depth` levels deep) for a
+        file named stockfish*.exe, returning the first match found."""
+        if not os.path.isdir(base):
+            return None
+        base_depth = base.rstrip("\\/").count(os.sep)
+        for root, dirs, files in os.walk(base):
+            if root.rstrip("\\/").count(os.sep) - base_depth >= max_depth:
+                dirs[:] = []   # don't descend further
+                continue
+            for f in files:
+                if f.lower().startswith("stockfish") and f.lower().endswith(".exe"):
+                    return os.path.join(root, f)
         return None
 
     def __del__(self) -> None:

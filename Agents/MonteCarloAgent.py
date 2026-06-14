@@ -3,6 +3,9 @@ import random
 import time
 
 from Agents.AgentInterface import AgentInterface
+from Agents.MinimaxAgent import (
+    PST_KING_END, PST_KING_MID, PHASE_TOTAL_START, _pst_value,
+)
 import rules
 
 PIECE_VALUES = {"Pawn": 1, "Knight": 3, "Bishop": 3, "Rook": 5, "Queen": 9, "King": 0}
@@ -20,17 +23,41 @@ def _hash_grid(grid):
     )
 
 
-def _material_score(grid):
-    """Estimated P(white wins) from the material balance at rollout cutoff.
-    Smooth gradient so every point of material shifts the score — a hard
-    win/loss threshold made small captures invisible to the search."""
-    diff = 0
-    for row in grid:
-        for piece in row:
-            if piece:
-                val = PIECE_VALUES.get(piece.get_type(), 0)
-                diff += val if piece.get_color() == "white" else -val
-    return 1.0 / (1.0 + 10.0 ** (-diff / 10.0))
+def _positional_score(grid):
+    """Estimated P(white wins) from material + piece-square positioning at
+    rollout cutoff. Smooth gradient so every point of material/position
+    shifts the score — a hard win/loss threshold made small edges invisible
+    to the search. PST terms let MCTS value development, central control
+    and king safety; pure material made every quiet position look ~50/50."""
+    diff = 0.0
+    phase_material = 0
+    king_pos = {}
+    for r in range(8):
+        for c in range(8):
+            piece = grid[r][c]
+            if piece is None:
+                continue
+            ptype, pcolor = piece.get_type(), piece.get_color()
+            sign = 1 if pcolor == "white" else -1
+            diff += sign * PIECE_VALUES.get(ptype, 0)
+            if ptype == "King":
+                king_pos[pcolor] = (r, c)
+            else:
+                diff += sign * _pst_value(ptype, pcolor, r, c)
+                if ptype != "Pawn":
+                    phase_material += PIECE_VALUES.get(ptype, 0)
+
+    phase_ratio = min(1.0, phase_material / PHASE_TOTAL_START)
+    k_table = PST_KING_MID if phase_ratio > 0.4 else PST_KING_END
+    for pcolor, (kr, kc) in king_pos.items():
+        sign = 1 if pcolor == "white" else -1
+        pst_row = kr if pcolor == "white" else (7 - kr)
+        diff += sign * k_table[pst_row][kc]
+
+    # Divisor of 5 (not 10): a typical winning trade (e.g. pawn-for-knight,
+    # diff swings by ~2) needs to move the win estimate well clear of 0.5,
+    # or UCT can't tell it apart from rollout noise within a few hundred visits.
+    return 1.0 / (1.0 + 10.0 ** (-diff / 5.0))
 
 
 def _pseudo_legal_moves(grid, color, en_passant_target=None):
@@ -96,8 +123,8 @@ class MCTSNode:
 
 class MonteCarloAgent(AgentInterface):
 
-    def __init__(self, color, time_limit=2.0, max_simulations=1000,
-                 max_rollout_depth=20, exploration_constant=1.414):
+    def __init__(self, color, time_limit=2.0, max_simulations=10000,
+                 max_rollout_depth=4, exploration_constant=1.414):
         self.color              = color
         self.time_limit         = time_limit
         self.max_simulations    = max_simulations
@@ -167,14 +194,19 @@ class MonteCarloAgent(AgentInterface):
         return child
 
     def _rollout(self, node):
-        """Capture-biased rollout using pseudo-legal moves.
-        Returns an estimated P(white wins) in [0, 1].
+        """Short capture-biased rollout using pseudo-legal moves, then a
+        positional cutoff score. Returns an estimated P(white wins) in [0, 1].
 
         King capture acts as checkmate signal, avoiding the expensive
         is_in_check scan. Captures are preferred over uniformly random moves —
         strongly on the first ply (so a piece hung by the expanded move is
         punished immediately) and moderately afterwards. Pure-random play makes
-        every position look ~50/50, which drowns the signal MCTS needs."""
+        every position look ~50/50, which drowns the signal MCTS needs.
+
+        Kept short (max_rollout_depth) so the cutoff position stays close to
+        the node being evaluated: a long rollout lets random captures on
+        *both* sides pile up, swamping the small material/positional edge a
+        single good move creates with noise the search can't average away."""
         grid              = node.grid
         color             = node.color
         castling_rights   = node.castling_rights
@@ -217,7 +249,7 @@ class MonteCarloAgent(AgentInterface):
 
             color = opp
 
-        return _material_score(grid)
+        return _positional_score(grid)
 
     def _backpropagate(self, node, score_white):
         """Propagate a rollout score (P(white wins), in [0, 1]) up the tree.

@@ -78,12 +78,7 @@ python main.py
 
 ## Configuring players
 
-Edit the two lines near the top of [main.py](main.py):
-
-```python
-WHITE_PLAYER = MonteCarloAgent("white")
-BLACK_PLAYER = MinimaxAgent("black")
-```
+Options are displayed on launch
 
 | Value | Effect |
 |---|---|
@@ -92,21 +87,6 @@ BLACK_PLAYER = MinimaxAgent("black")
 | `MonteCarloAgent("color")` | MCTS AI |
 | `RandomAgent("color")` | Random AI |
 
-Examples:
-
-```python
-# Human vs Human
-WHITE_PLAYER = None
-BLACK_PLAYER = None
-
-# Human (white) vs Minimax AI (black)
-WHITE_PLAYER = None
-BLACK_PLAYER = MinimaxAgent("black")
-
-# AI vs AI
-WHITE_PLAYER = MonteCarloAgent("white")
-BLACK_PLAYER = MinimaxAgent("black")
-```
 
 ## Extending
 

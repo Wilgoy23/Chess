@@ -119,6 +119,14 @@ def get_legal_moves_from(grid, from_pos, castling_rights, en_passant_target=None
         test = [row_[:] for row_ in grid]
         test[tr][tc] = test[fr][fc]
         test[fr][fc] = None
+        # Simulate the en passant capture: the captured pawn sits beside the
+        # origin square, not on the destination. Leaving it on the test grid
+        # would let it block a discovered check and make the move look legal.
+        if (piece.get_type() == "Pawn"
+                and to_pos == en_passant_target
+                and tc != fc
+                and grid[tr][tc] is None):
+            test[fr][tc] = None
         # Simulate castling rook relocation in the test grid
         if piece.get_type() == "King" and abs(tc - fc) == 2:
             if tc == 6:

@@ -125,6 +125,7 @@ class MonteCarloAgent(AgentInterface):
 
     def __init__(self, color, time_limit=2.0, max_simulations=10000,
                  max_rollout_depth=4, exploration_constant=1.414):
+        super().__init__()
         self.color              = color
         self.time_limit         = time_limit
         self.max_simulations    = max_simulations
@@ -166,7 +167,7 @@ class MonteCarloAgent(AgentInterface):
                    key=lambda ch: (ch.visits, ch.wins / ch.visits)).move
 
     def _timed_out(self):
-        return time.time() - self._start_time >= self.time_limit
+        return time.time() - self._start_time >= self.time_limit or self.stop_event.is_set()
 
     # -------------------------------------------------------------------------
     # MCTS phases

@@ -144,6 +144,7 @@ def _order_moves(grid, moves):
 class MinimaxAgent(AgentInterface):
 
     def __init__(self, color, depth=5, time_limit=2.0):
+        super().__init__()
         self.color      = color
         self.max_depth  = depth
         self.time_limit = time_limit
@@ -185,7 +186,7 @@ class MinimaxAgent(AgentInterface):
     # -------------------------------------------------------------------------
 
     def _timed_out(self):
-        return time.time() >= self._deadline
+        return time.time() >= self._deadline or self.stop_event.is_set()
 
     def _minimax(self, grid, castling_rights, en_passant_target, depth, alpha, beta, maximizing):
         if depth == 0 or self._timed_out():

@@ -6,6 +6,7 @@ import rules
 class RandomAgent(AgentInterface):
 
     def __init__(self, color):
+        super().__init__()
         self.color = color
 
     def get_move(self, grid, color, castling_rights, en_passant_target=None) -> tuple:

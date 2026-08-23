@@ -104,6 +104,7 @@ class StockfishAgent(AgentInterface):
     def __init__(self, color: str, time_limit: float = 2.0,
                  skill_level: int = 20,
                  stockfish_path: str | None = None) -> None:
+        super().__init__()
         self.color       = color
         self.time_limit  = time_limit
         self.skill_level = skill_level
@@ -152,6 +153,15 @@ class StockfishAgent(AgentInterface):
                 if len(parts) >= 2 and parts[1] != "(none)":
                     return _uci_to_move(parts[1])
                 return None
+
+    def stop(self) -> None:
+        """Interrupt an in-progress `go`: Stockfish replies with bestmove as
+        soon as it receives `stop`, unblocking get_move()'s readline loop."""
+        self.stop_event.set()
+        try:
+            self._send("stop")
+        except Exception:
+            pass
 
     # -------------------------------------------------------------------------
     # Internal helpers

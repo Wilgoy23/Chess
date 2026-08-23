@@ -1,5 +1,7 @@
 # Chess
 
+[![CI](https://github.com/Wilgoy23/Chess/actions/workflows/ci.yml/badge.svg)](https://github.com/Wilgoy23/Chess/actions/workflows/ci.yml)
+
 A In-Progress chess engine built in Python with Pygame. Supports human vs. human, human vs. AI, and AI vs. AI play with three interchangeable agent types.
 
 ## Features
@@ -67,14 +69,27 @@ Chess/
 
 ## Requirements
 
-- Python 3.10+
-- [Pygame](https://www.pygame.org/) — `pip install pygame`
+- Python 3.10+ (the codebase uses `X | None` type hints)
+- [Pygame](https://www.pygame.org/)
 
 ## Running
 
 ```bash
+pip install -r requirements.txt
 python main.py
 ```
+
+## Development
+
+```bash
+pip install -r requirements-dev.txt
+python -m ruff check .   # lint
+python -m pytest         # tests (perft's slow deep cases are skipped by default;
+                          # pass --runslow or set PERFT_SLOW=1 to include them)
+```
+
+CI (`.github/workflows/ci.yml`) runs both on every push/PR against Python 3.10
+and 3.13.
 
 ## Configuring players
 

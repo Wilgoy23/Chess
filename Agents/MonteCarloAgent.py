@@ -206,8 +206,14 @@ class MonteCarloAgent(AgentInterface):
         Kept short (max_rollout_depth) so the cutoff position stays close to
         the node being evaluated: a long rollout lets random captures on
         *both* sides pile up, swamping the small material/positional edge a
-        single good move creates with noise the search can't average away."""
-        grid              = node.grid
+        single good move creates with noise the search can't average away.
+
+        Copies node.grid once up front into a private working grid, then
+        mutates that copy in place via rules.make_move for the rest of the
+        rollout (no unmake — the rollout is throwaway and only its final
+        score escapes). node.grid itself is never touched: other
+        simulations still need to walk through this node later."""
+        grid              = [row[:] for row in node.grid]
         color             = node.color
         castling_rights   = node.castling_rights
         en_passant_target = node.en_passant_target
@@ -239,7 +245,7 @@ class MonteCarloAgent(AgentInterface):
             if move is None:
                 move = random.choice(moves)
 
-            grid, castling_rights, en_passant_target, _ = rules.apply_move(
+            _, castling_rights, en_passant_target, _ = rules.make_move(
                 grid, *move, castling_rights, en_passant_target)
 
             # If the king was just captured the moving side wins outright

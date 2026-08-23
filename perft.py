@@ -51,11 +51,12 @@ def _perft(grid, color, castling_rights, en_passant_target, depth):
     total = 0
     for from_pos, to_pos in rules.get_legal_moves(grid, color, castling_rights, en_passant_target):
         for promotion in _promotions(grid, from_pos, to_pos):
-            new_grid, new_rights, new_ep, _ = rules.apply_move(
+            changes, new_rights, new_ep, _ = rules.make_move(
                 grid, from_pos, to_pos, castling_rights, en_passant_target,
                 promotion=promotion,
             )
-            total += _perft(new_grid, opponent, new_rights, new_ep, depth - 1)
+            total += _perft(grid, opponent, new_rights, new_ep, depth - 1)
+            rules.unmake_move(grid, changes)
     return total
 
 
@@ -73,13 +74,14 @@ def perft_divide(position, depth):
     counts = {}
     for from_pos, to_pos in rules.get_legal_moves(grid, color, castling_rights, en_passant_target):
         for promotion in _promotions(grid, from_pos, to_pos):
-            new_grid, new_rights, new_ep, _ = rules.apply_move(
+            changes, new_rights, new_ep, _ = rules.make_move(
                 grid, from_pos, to_pos, castling_rights, en_passant_target,
                 promotion=promotion,
             )
             counts[move_name(from_pos, to_pos, promotion)] = _perft(
-                new_grid, opponent, new_rights, new_ep, depth - 1
+                grid, opponent, new_rights, new_ep, depth - 1
             )
+            rules.unmake_move(grid, changes)
     return counts
 
 

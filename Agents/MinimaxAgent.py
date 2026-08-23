@@ -209,10 +209,11 @@ class MinimaxAgent(AgentInterface):
             for fm, tm in moves:
                 if self._timed_out():
                     break
-                new_grid, new_cr, new_ep, _ = rules.apply_move(
+                changes, new_cr, new_ep, _ = rules.make_move(
                     grid, fm, tm, castling_rights, en_passant_target)
-                score, _ = self._minimax(new_grid, new_cr, new_ep,
+                score, _ = self._minimax(grid, new_cr, new_ep,
                                           depth - 1, alpha, beta, False)
+                rules.unmake_move(grid, changes)
                 if score > best:
                     best      = score
                     best_move = (fm, tm)
@@ -225,10 +226,11 @@ class MinimaxAgent(AgentInterface):
             for fm, tm in moves:
                 if self._timed_out():
                     break
-                new_grid, new_cr, new_ep, _ = rules.apply_move(
+                changes, new_cr, new_ep, _ = rules.make_move(
                     grid, fm, tm, castling_rights, en_passant_target)
-                score, _ = self._minimax(new_grid, new_cr, new_ep,
+                score, _ = self._minimax(grid, new_cr, new_ep,
                                           depth - 1, alpha, beta, True)
+                rules.unmake_move(grid, changes)
                 if score < best:
                     best      = score
                     best_move = (fm, tm)

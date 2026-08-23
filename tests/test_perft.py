@@ -6,8 +6,8 @@ results page. A mismatch means move generation is wrong somewhere; use
 subtree disagrees.
 
 Deep cases are marked `slow` and skipped unless you pass `--runslow` (or set
-PERFT_SLOW=1). On the current object-grid engine the full set takes ~4 minutes;
-the default set takes a few seconds.
+PERFT_SLOW=1). After the PRD 1.2 move-generation speedup, the full set takes
+under two minutes; the default set takes a few seconds.
 """
 
 import pytest
@@ -34,7 +34,7 @@ POSITIONS = {
 
 # Cases above this node count are gated behind --runslow. Lower the bar as the
 # engine gets faster (PRD 1.2) until the whole set fits in the default run.
-FAST_MAX_NODES = 250_000
+FAST_MAX_NODES = 500_000
 
 
 def _cases():

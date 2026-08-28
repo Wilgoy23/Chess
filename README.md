@@ -24,7 +24,15 @@ A In-Progress chess engine built in Python with Pygame. Supports human vs. human
 |---|---|---|
 | `MinimaxAgent` | Alpha-beta minimax, depth 5, 2 s time limit | Strong |
 | `MonteCarloAgent` | MCTS with UCT selection, 1000 simulations, 2 s time limit | Strong |
+| `GreedyAgent` | One-ply material-capture maximizer, random tie-break | Weak |
 | `RandomAgent` | Uniform random legal move | Baseline |
+
+Agents cooperate with cancellation: `AgentInterface.stop()` sets a
+`threading.Event` (`stop_event`) that Minimax/MCTS poll between search
+iterations, and that StockfishAgent's override turns into a UCI `stop`
+command — so pausing, undoing, or starting a new game while an agent is
+thinking interrupts its worker thread instead of leaving it to finish
+unseen.
 
 ### MinimaxAgent evaluation
 
@@ -46,10 +54,24 @@ Standard MCTS loop: selection via UCT (C = 1.414), random expansion, capture-bia
 
 ```
 Chess/
-├── main.py                  # Entry point, game loop, agent threading
-├── board.py                 # Board state, rendering, move execution
-├── rules.py                 # Central rules engine: move generation, check,
+├── main.py                  # Thin pygame entry point: window, event loop
+├── game.py                  # GameController: state, history, clocks, agent
+│                             #   threading — no rendering
+├── game_state.py             # GameState: pure grid/turn/rights + move
+│                             #   application, no pygame import
+├── agent_factory.py          # Builds an agent instance from a kind string;
+│                             #   shared by main.py and tournament.py
+├── tournament.py             # Headless CLI: agent-vs-agent games, no pygame
+│                             #   (python -m tournament ...)
+├── rules.py                  # Central rules engine: move generation, check,
 │                             #   move application, game-end conditions
+├── fen.py                    # FEN parsing (also pygame-free)
+├── ui/
+│   ├── layout.py             # Window/board layout constants
+│   ├── widgets.py            # Shared font cache + small draw helpers
+│   ├── board_view.py         # Board rendering + click-to-move interaction
+│   ├── config_modal.py       # Game-setup modal
+│   └── bars.py                # Info bar, control bar, game-over overlay
 ├── Pieces/
 │   ├── PieceInterface.py    # Abstract base class for all pieces
 │   ├── Pawn.py
@@ -62,6 +84,7 @@ Chess/
 │   ├── AgentInterface.py    # Abstract base class for all agents
 │   ├── MinimaxAgent.py
 │   ├── MonteCarloAgent.py
+│   ├── GreedyAgent.py
 │   ├── RandomAgent.py
 │   └── StockfishAgent.py
 └── pieces/                  # PNG piece images (wPawn.png, bRook.png, …)
@@ -91,6 +114,20 @@ python -m pytest         # tests (perft's slow deep cases are skipped by default
 CI (`.github/workflows/ci.yml`) runs both on every push/PR against Python 3.10
 and 3.13.
 
+### Tournament (headless)
+
+Play agents against each other with no pygame window, parallel across
+worker processes:
+
+```bash
+python -m tournament --white random --black greedy --games 100 --time 0.5 --seed 42
+```
+
+`--white`/`--black` accept any agent kind except `human` (`random`, `greedy`,
+`minimax`, `montecarlo`, `stockfish`). Prints W-D-L, average game length, and
+total/wall time; `--workers` controls parallelism (default: one process per
+game, up to the CPU count).
+
 ## Configuring players
 
 Options are displayed on launch
@@ -114,6 +151,7 @@ import rules
 
 class MyAgent(AgentInterface):
     def __init__(self, color):
+        super().__init__()   # sets up self.stop_event for cancellable search
         self.color = color
 
     def get_move(self, grid, color, castling_rights, en_passant_target=None):
